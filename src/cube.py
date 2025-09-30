@@ -14,6 +14,16 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+def invert_perm_and_delta(perm, delta, mod):
+    n = len(perm)
+    inv_perm  = [0]*n
+    inv_delta = [0]*n
+    for i in range(n):
+        j = perm[i]          # dest i took from src j
+        inv_perm[j]  = i     # so src j comes from dest i in the inverse
+        inv_delta[j] = (-delta[i]) % mod
+    return np.array(inv_perm, dtype=np.int8), np.array(inv_delta, dtype=np.int8)
+
 class Cube:
     """
     A class to represent a 3x3 Rubik's Cube using cubelets (12 edges and 8 corners).
@@ -56,7 +66,7 @@ class Cube:
     _corner_position: np.array
     _corner_orientation: np.array
 
-    _colors: Dict[int,str] = {0:"white", 1:"red", 2:"green", 3:"yellow", 4:"orange", 5:"blue"}
+    _colors: Dict[int,str] = {0:"white", 1:"blue", 2:"orange", 3:"yellow", 4:"green", 5:"red"}
 
     # cubelet to facelet mapping
     _corner_piece_colors: List[Tuple[int,int,int]] = [
@@ -108,6 +118,39 @@ class Cube:
         [(5, 1, 0), (4, 1, 0)],  # 10: BL
         [(5, 1, 2), (1, 1, 2)],  # 11: BR
     ]
+    CORN_PERM = {
+        'U': [1, 2, 3, 0, 4, 5, 6, 7],
+        'D': [0, 1, 2, 3, 5, 6, 7, 4],
+        'R': [4, 1, 2, 0, 7, 5, 6, 3],
+        'L': [0, 5, 1, 3, 4, 6, 2, 7],
+        'F': [1, 5, 2, 3, 0, 4, 6, 7],
+        'B': [0, 1, 6, 2, 4, 5, 7, 3],
+    }
+    # orientation deltas (mod 3), 0 where unaffected
+    CORN_ORI = {
+        'U': [0, 0, 0, 0, 0, 0, 0, 0],
+        'D': [0, 0, 0, 0, 0, 0, 0, 0],
+        'R': [2, 0, 0, 1, 1, 0, 0, 2],
+        'L': [0, 1, 2, 0, 0, 2, 1, 0],
+        'F': [1, 2, 0, 0, 2, 1, 0, 0],
+        'B': [0, 0, 1, 2, 0, 0, 2, 1],
+    }
+    EDGE_PERM = {
+        'U': [1, 2, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11],
+        'D': [0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11],
+        'R': [8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0],
+        'L': [0, 1, 9, 3, 4, 5, 10, 7, 8, 6, 2, 11],
+        'F': [0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11],
+        'B': [0, 1, 2, 10, 4, 5, 6, 11, 8, 9, 3, 7],
+    }
+    EDGE_ORI = {
+        'U': [0] * 12,
+        'D': [0] * 12,
+        'R': [0] * 12,
+        'L': [0] * 12,
+        'F': [0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0],  # flip UF, DF, FR, FL (those 4 get +1 mod2)
+        'B': [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1],  # flip UB, DB, BL, BR
+    }
 
     faces: list[str] = ['F', 'R', 'L', 'B', 'U', 'B', 'D']
 
@@ -137,6 +180,8 @@ class Cube:
         self._corner_position = np.arange(8)
         self._corner_orientation = np.zeros_like(self._corner_position)
 
+        # self._edges_position = np.array([1,2,4,5,6,3,0,8,7,9,11,10])
+
 
 
     def _validate_edges(self):
@@ -151,8 +196,22 @@ class Cube:
     def scramble(self):
         pass
 
-    def rotate(self, face:str, clockwise: bool = True):
-        pass
+    def rotate(self, face: str, clockwise: bool = True):
+        tbl = (self.CORN_PERM, self.CORN_ORI, self.EDGE_PERM, self.EDGE_ORI)
+        if clockwise:
+            cperm = self.CORN_PERM[face]
+            cdel = self.CORN_ORI[face]
+            eperm = self.EDGE_PERM[face]
+            edel = self.EDGE_ORI[face]
+        else:
+            # derive prime on the fly by inverting
+            cperm, cdel = invert_perm_and_delta(self.CORN_PERM[face], self.CORN_ORI[face], mod=3)
+            eperm, edel = invert_perm_and_delta(self.EDGE_PERM[face], self.EDGE_ORI[face], mod=2)
+
+        self._corner_position = self._corner_position[cperm]
+        self._corner_orientation = (self._corner_orientation[cperm] + np.array(cdel, dtype=np.int8)) % 3
+        self._edges_position = self._edges_position[eperm]
+        self._edges_orientation = (self._edges_orientation[eperm] + np.array(edel, dtype=np.int8)) % 2
 
     def plot(self):
         pass
