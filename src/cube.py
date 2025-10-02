@@ -94,29 +94,28 @@ class Cube:
         (5, 1),  # 11: BR
     ]
     _corner_slot_facelets: List[List[Tuple[int,int,int]]] = [
-
-        [(0, 2, 2), (1, 0, 0), (2, 0, 2)],  # 0: URF
-        [(0, 2, 0), (2, 0, 0), (4, 0, 2)],  # 1: UFL
-        [(0, 0, 0), (4, 0, 0), (5, 0, 2)],  # 2: ULB
-        [(0, 0, 2), (5, 0, 0), (1, 0, 2)],  # 3: UBR
-        [(3, 0, 2), (2, 2, 2), (1, 2, 0)],  # 4: DFR
-        [(3, 0, 0), (4, 2, 2), (2, 2, 0)],  # 5: DLF
-        [(3, 2, 0), (5, 2, 2), (4, 2, 0)],  # 6: DBL
-        [(3, 2, 2), (1, 2, 2), (5, 2, 0)],  # 7: DRB
+        [(0,2,2),(1,0,0),(2,0,2)],  # 0: URF
+        [(0,2,0),(2,0,0),(4,0,2)],  # 1: UFL
+        [(0,0,0),(4,0,0),(5,0,2)],  # 2: ULB
+        [(0,0,2),(5,0,0),(1,0,2)],  # 3: UBR
+        [(3,0,2),(2,2,2),(1,2,0)],  # 4: DFR
+        [(3,0,0),(4,2,2),(2,2,0)],  # 5: DLF
+        [(3,2,0),(5,2,2),(4,2,0)],  # 6: DBL
+        [(3,2,2),(1,2,2),(5,2,0)],  # 7: DRB
     ]
     _edge_slot_facelets: List[List[Tuple[int, int, int]]] = [
-        [(0, 1, 2), (1, 0, 1)],  # 0: UR
-        [(0, 2, 1), (2, 0, 1)],  # 1: UF
-        [(0, 1, 0), (4, 0, 1)],  # 2: UL
-        [(0, 0, 1), (5, 0, 1)],  # 3: UB
-        [(3, 1, 2), (1, 2, 1)],  # 4: DR
-        [(3, 0, 1), (2, 2, 1)],  # 5: DF
-        [(3, 1, 0), (4, 2, 1)],  # 6: DL
-        [(3, 2, 1), (5, 2, 1)],  # 7: DB
-        [(2, 1, 2), (1, 1, 0)],  # 8: FR
-        [(2, 1, 0), (4, 1, 2)],  # 9: FL
-        [(5, 1, 0), (4, 1, 0)],  # 10: BL
-        [(5, 1, 2), (1, 1, 2)],  # 11: BR
+        [(0,1,2),(1,0,1)],  # 0: UR
+        [(0,2,1),(2,0,1)],  # 1: UF
+        [(0,1,0),(4,0,1)],  # 2: UL
+        [(0,0,1),(5,0,1)],  # 3: UB
+        [(3,1,2),(1,2,1)],  # 4: DR
+        [(3,0,1),(2,2,1)],  # 5: DF
+        [(3,1,0),(4,2,1)],  # 6: DL
+        [(3,2,1),(5,2,1)],  # 7: DB
+        [(2,1,2),(1,1,0)],  # 8: FR
+        [(2,1,0),(4,1,2)],  # 9: FL
+        [(5,1,0),(4,1,0)],  # 10: BL
+        [(5,1,2),(1,1,2)],  # 11: BR
     ]
     CORN_PERM = {
         'U': [1, 2, 3, 0, 4, 5, 6, 7],
@@ -312,5 +311,27 @@ class Cube:
         ax.set_axis_off()
         plt.show()
 
+    def _assert_invariants(self):
+        assert int(self._corner_orientation.sum()) % 3 == 0
+        assert int(self._edges_orientation.sum()) % 2 == 0
 
+    def _test_move(self, m):
+        cp, co = self._corner_position.copy(), self._corner_orientation.copy()
+        ep, eo = self._edges_position.copy(), self._edges_orientation.copy()
 
+        # move + inverse → identity
+        self.rotate(m, True);
+        self.rotate(m, False)
+        assert np.all(self._corner_position == cp);
+        assert np.all(self._edges_position == ep)
+        assert np.all(self._corner_orientation == co);
+        assert np.all(self._edges_orientation == eo)
+
+        # 4× same quarter-turn → identity
+        for _ in range(4): self.rotate(m, True)
+        assert np.all(self._corner_position == cp);
+        assert np.all(self._edges_position == ep)
+        assert np.all(self._corner_orientation == co);
+        assert np.all(self._edges_orientation == eo)
+
+        self._assert_invariants()
