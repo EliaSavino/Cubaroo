@@ -79,7 +79,32 @@ class Cube:
         (3, 5, 4),  # 6: DBL
         (3, 1, 5),  # 7: DRB
     ]
+    _corner_slot_faces: List[Tuple[int, int, int]] = [
+        (0, 1, 2),  # 0: URF
+        (0, 2, 4),  # 1: UFL
+        (0, 4, 5),  # 2: ULB
+        (0, 5, 1),  # 3: UBR
+        (3, 2, 1),  # 4: DFR
+        (3, 4, 2),  # 5: DLF
+        (3, 5, 4),  # 6: DBL
+        (3, 1, 5),  # 7: DRB
+    ]
+
     _edge_piece_colors: List[Tuple[int,int]] = [
+        (0, 1),  # 0: UR
+        (0, 2),  # 1: UF
+        (0, 4),  # 2: UL
+        (0, 5),  # 3: UB
+        (3, 1),  # 4: DR
+        (3, 2),  # 5: DF
+        (3, 4),  # 6: DL
+        (3, 5),  # 7: DB
+        (2, 1),  # 8: FR
+        (2, 4),  # 9: FL
+        (5, 4),  # 10: BL
+        (5, 1),  # 11: BR
+    ]
+    _edge_slot_faces: List[Tuple[int, int]] = [
         (0, 1),  # 0: UR
         (0, 2),  # 1: UF
         (0, 4),  # 2: UL
@@ -217,51 +242,112 @@ class Cube:
 
     def _convert_cubelet_facelet(self) -> np.ndarray:
         """
-        Converts the cubelet representation (positions + orientations)
-        into a 6×3×3 facelet array with ints 0–5 = face colors.
-
-        Returns
-        -------
-        cube_facelet : np.ndarray
-            Array of shape (6,3,3) with facelet colors.
+        Converts the cubie representation to a 6x3x3 facelet array (ints 0..5).
+        Maps by face-id and applies a single 180° mapping for the Back face.
         """
         cube_facelet = np.empty((6, 3, 3), dtype=int)
 
-        # --- centers ---
+        # centers
         for f in range(6):
-            cube_facelet[f, :, :] = f  # fill with default
-            cube_facelet[f, 1, 1] = f  # center explicitly set
+            cube_facelet[f, :, :] = f
+            cube_facelet[f, 1, 1] = f
 
-        # --- corners ---
+        # build lookups: face -> (r,c) at each slot
+        corner_pos_by_face = []
+        for coords in self._corner_slot_facelets:
+            corner_pos_by_face.append({face: (r, c) for (face, r, c) in coords})
+
+        edge_pos_by_face = []
+        for coords in self._edge_slot_facelets:
+            edge_pos_by_face.append({face: (r, c) for (face, r, c) in coords})
+
+        # ---- corners ----
         for slot in range(8):
-            piece = self._corner_position[slot]
-            ori = self._corner_orientation[slot]
+            piece = int(self._corner_position[slot])
+            ori = int(self._corner_orientation[slot]) % 3
 
-            # canonical colors for this piece
-            colors = list(self._corner_piece_colors[piece])
+            base_colors = list(self._corner_piece_colors[piece])  # piece-order colors, e.g. (U,R,F) for URF
+            faces_here = list(self._corner_slot_faces[slot])  # slot faces, e.g. (U,R,F) for slot 0
+            rotated_colors = base_colors[ori:] + base_colors[:ori]  # **CW** rotation (match CORN_ORI)
 
-            # rotate by ori (mod 3)
-            rotated = colors[ori:] + colors[:ori]
+            face_to_rc = corner_pos_by_face[slot]
+            for k, face_id in enumerate(faces_here):
+                r, c = face_to_rc[face_id]
+                r, c = self._map_rc(face_id, r, c)  # single B-face rule for all stickers
+                cube_facelet[face_id, r, c] = rotated_colors[k]
 
-            # drop them into their three facelet coords
-            for k, (f, r, c) in enumerate(self._corner_slot_facelets[slot]):
-                cube_facelet[f, r, c] = rotated[k]
-
-        # --- edges ---
+        # ---- edges ----
         for slot in range(12):
-            piece = self._edges_position[slot]
-            ori = self._edges_orientation[slot]
+            piece = int(self._edges_position[slot])
+            ori = int(self._edges_orientation[slot]) % 2
 
-            a, b = self._edge_piece_colors[piece]
-            if ori == 0:
-                colors = (a, b)
-            else:
-                colors = (b, a)
+            a, b = self._edge_piece_colors[piece]  # piece-order faces
+            faces_here = list(self._edge_slot_faces[slot])
+            colors = (a, b) if ori == 0 else (b, a)
 
-            for k, (f, r, c) in enumerate(self._edge_slot_facelets[slot]):
-                cube_facelet[f, r, c] = colors[k]
+            face_to_rc = edge_pos_by_face[slot]
+            for k, face_id in enumerate(faces_here):
+                r, c = face_to_rc[face_id]
+                r, c = self._map_rc(face_id, r, c)  # **same** B-face rule for edges
+                cube_facelet[face_id, r, c] = colors[k]
 
         return cube_facelet
+
+    def _decode_from_facelets(self, F):
+        """
+        Given the 6x3x3 facelet color array F (ints 0..5),
+        reconstruct cubie (corner/edge) positions + orientations.
+        Uses _corner_slot_faces/_corner_slot_facelets and
+        _edge_slot_faces/_edge_slot_facelets.
+        """
+        # corners
+        corner_pos = np.empty(8, dtype=np.int8)
+        corner_ori = np.empty(8, dtype=np.int8)
+        for slot in range(8):
+            faces = self._corner_slot_faces[slot]
+            coords = self._corner_slot_facelets[slot]
+            seen = tuple(F[f, r, c] for (f, r, c) in coords)  # sticker colors on that slot in (coords) order
+            # find which piece matches (up to rotation)
+            found = False
+            for piece in range(8):
+                base = list(self._corner_piece_colors[piece])
+                for ori in (0, 1, 2):
+                    rot = tuple(base[ori:] + base[:ori])
+                    # map by face id, not by index in list
+                    # reorder rot so its k-th entry corresponds to the face of coords[k]
+                    target = tuple(rot[list(faces).index(f)] for (f, _, _) in coords)
+                    if target == seen:
+                        corner_pos[slot] = piece
+                        corner_ori[slot] = ori
+                        found = True
+                        break
+                if found: break
+            if not found:
+                raise AssertionError(f"Could not decode corner at slot {slot}: seen={seen}, faces={faces}")
+
+        # edges
+        edge_pos = np.empty(12, dtype=np.int8)
+        edge_ori = np.empty(12, dtype=np.int8)
+        for slot in range(12):
+            faces = self._edge_slot_faces[slot]
+            coords = self._edge_slot_facelets[slot]
+            seen = tuple(F[f, r, c] for (f, r, c) in coords)
+            found = False
+            for piece in range(12):
+                a, b = self._edge_piece_colors[piece]
+                for ori in (0, 1):  # 0:(a,b), 1:(b,a)
+                    col = (a, b) if ori == 0 else (b, a)
+                    target = tuple(col[list(faces).index(f)] for (f, _, _) in coords)
+                    if target == seen:
+                        edge_pos[slot] = piece
+                        edge_ori[slot] = ori
+                        found = True
+                        break
+                if found: break
+            if not found:
+                raise AssertionError(f"Could not decode edge at slot {slot}: seen={seen}, faces={faces}")
+
+        return corner_pos, corner_ori, edge_pos, edge_ori
 
     def plot(self):
         """
@@ -335,3 +421,56 @@ class Cube:
         assert np.all(self._edges_orientation == eo)
 
         self._assert_invariants()
+
+    def assert_roundtrip(self):
+        """
+        Keep your roundtrip test, but this now matches the +ori convention.
+        """
+        F = self._convert_cubelet_facelet()
+        cp, co, ep, eo = self._decode_from_facelets(F)
+        assert np.all(cp == self._corner_position), ("corner positions mismatch", cp, self._corner_position)
+        assert np.all(co % 3 == self._corner_orientation % 3), ("corner orientations mismatch", co,
+                                                                self._corner_orientation)
+        assert np.all(ep == self._edges_position), ("edge positions mismatch", ep, self._edges_position)
+        assert np.all(eo % 2 == self._edges_orientation % 2), ("edge orientations mismatch", eo,
+                                                               self._edges_orientation)
+
+    def _build_face_grids(self):
+        """
+        Define a consistent (r,c) frame for every face when viewed head-on.
+
+        Convention (Singmaster):
+          Faces ids: 0=U, 1=R, 2=F, 3=D, 4=L, 5=B.
+          For each face, r increases downward, c increases rightward *as seen from that face*.
+
+        We choose the following adjacency (standard net):
+          - On U: top row touches B, bottom row touches F; left col touches L, right col touches R.
+          - On F: top row touches U, bottom row touches D; left col L, right col R.
+          - On R: top row U, bottom row D; left col F, right col B.
+          - On L: top row U, bottom row D; left col B, right col F.
+          - On D: top row F, bottom row B; left col L, right col R.
+          - On B: top row U, bottom row D; left col R, right col L.  (note: mirrored)
+        """
+        grids = {f: np.empty((3, 3), dtype=object) for f in range(6)}
+        # Fill with coordinate tuples
+        for f in range(6):
+            for r in range(3):
+                for c in range(3):
+                    grids[f][r, c] = (f, r, c)
+        return grids
+
+    def _map_rc(self, face_id: int, r: int, c: int) -> Tuple[int, int]:
+        """
+        Map logical (r,c) to storage (r,c) for a given face.
+        Use a single consistent rule: rotate Back (face 5) by 180°.
+        This aligns handedness of B with F so strips move as expected.
+        """
+        if face_id == 5:  # Back
+            return 2 - r, 2 - c
+        return r, c
+
+    def _map_edge_rc(self, face_id: int, r: int, c: int):
+        # Back face edges are mirrored horizontally
+        if face_id == 5:  # B
+            return r, 2 - c
+        return r, c
