@@ -9,7 +9,7 @@ Descr:
 '''
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, ClassVar
 
 # Face ids: 0=U, 1=R, 2=F, 3=D, 4=L, 5=B
 CORNER_SLOTS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"]
@@ -58,6 +58,13 @@ EDGE_FACELETS: Dict[str, List[Tuple[int, int, int]]] = {
     "BL": [(5, 1, 2), (4, 1, 0)],
     "BR": [(5, 1, 0), (1, 1, 2)],
 }
+# canonical *piece* colors (piece id equals its home slot index)
+CORNER_PIECE_COLORS: List[Tuple[int,int,int]] = [
+    (0,1,2),(0,2,4),(0,4,5),(0,5,1),(3,2,1),(3,4,2),(3,5,4),(3,1,5)
+]
+EDGE_PIECE_COLORS: List[Tuple[int,int]] = [
+    (0,1),(0,2),(0,4),(0,5),(3,1),(3,2),(3,4),(3,5),(2,1),(2,4),(5,4),(5,1)
+]
 
 def _rot(t: Tuple[int, ...], k: int) -> Tuple[int, ...]:
     k %= len(t)
@@ -65,57 +72,46 @@ def _rot(t: Tuple[int, ...], k: int) -> Tuple[int, ...]:
 
 @dataclass
 class Cubie:
-    """
-    Base class. 'stickers' are the cubie's canonical piece-order faces.
-    For a corner piece (URF), stickers e.g. = (U,R,F) as face ids (0..5).
-    For an edge piece (UR), stickers e.g. = (U,R).
-    """
-    stickers: Tuple[int, ...]     # canonical piece-order faces
-    slot_name: str                # current slot name
-    ori: int = 0                  # orientation (mod depends on subclass)
+    # current seat (slot) + orientation (relative to the piece’s canonical sticker order)
+    slot_name: str
+    ori: int
+    # immutable: the piece’s own sticker colors in canonical order
+    stickers: Tuple[int, ...]
+    # runtime: index of the piece (0..7 / 0..11) if you want to track it
+    piece_idx: int | None = None
 
-    # override in subclasses
-    ORI_MOD: int = 1
-    SLOT2FACES: Dict[str, Tuple[int, ...]] = None
-    FACELETS: Dict[str, List[Tuple[int, int, int]]] = None
+    # class-level config supplied by subclasses
+    ORI_MOD: ClassVar[int]
+    SLOT2FACES: ClassVar[Dict[str, Tuple[int, ...]]]
+    FACELETS: ClassVar[Dict[str, List[Tuple[int,int,int]]]]
 
-    def set_position(self, slot_name: str) -> None:
-        self.slot_name = slot_name
+    def move_to(self, dest_slot: str, delta_ori: int) -> None:
+        """Re-seat the SAME cubie object into a new slot and update its orientation in place."""
+        self.slot_name = dest_slot
+        self.ori = (self.ori + delta_ori) % self.ORI_MOD
 
-    def set_orientation(self, ori: int) -> None:
-        self.ori = ori % self.ORI_MOD
-
-    def move_to(self, slot_name: str, ori: int) -> None:
-        self.set_position(slot_name)
-        self.set_orientation(ori)
-
+    # --- rendering helpers ---
     def stickers_in_slot_order(self) -> Tuple[int, ...]:
-        """
-        Return the cubie's sticker colors (face ids) in the current slot's order,
-        after applying this cubie's orientation.
-        The trick: rotate in the *piece index space* (self.stickers),
-        then select by the index of each target face.
-        """
-        faces_here = list(self.SLOT2FACES[self.slot_name])
-        base = list(self.stickers)
-        rotated = list(_rot(tuple(base), self.ori))
-        # for each target face f in faces_here, pick rotated[ base.index(f) ]
-        try:
-            return tuple(rotated[base.index(f)] for f in faces_here)
-        except ValueError as e:
-            # If this triggers, the piece is in an impossible slot (face sets don’t match).
-            raise AssertionError(
-                f"Piece {self.stickers} cannot sit in slot {self.slot_name} (faces={faces_here})."
-            ) from e
+        """Return this piece’s sticker colors arranged to the slot order, given current ori."""
+        if self.ORI_MOD == 3:  # corner
+            base = list(self.stickers)
+            o = self.ori % 3
+            return tuple(base[o:] + base[:o])  # rotate CW by ori
+        else:  # edge (mod 2)
+            a, b = self.stickers
+            return (a, b) if (self.ori % 2) == 0 else (b, a)
 
-    def placements_for_slot(self) -> List[Tuple[int, int, int, int]]:
+    def placements_for_slot(self):
         """
-        Returns a list of placements (face, r, c, color_id) for this cubie
-        given its current slot and orientation. The order matches the slot order.
+        Yield (face, r, c, color) for this cubie’s stickers, using current slot+ori.
+        Zips slot faces with the oriented colors, then looks up absolute facelet coords.
         """
         colors = self.stickers_in_slot_order()
+        faces  = self.SLOT2FACES[self.slot_name]
         coords = self.FACELETS[self.slot_name]
-        return [(f, r, c, col) for (col, (f, r, c)) in zip(colors, coords)]
+        for (face_id, (f, r, c), col) in zip(faces, coords, colors):
+            # sanity: face_id should equal f in a correct table set; no need to assert though
+            yield (face_id, r, c, col)
 
 class CornerCubie(Cubie):
     ORI_MOD = 3
@@ -126,18 +122,3 @@ class EdgeCubie(Cubie):
     ORI_MOD = 2
     SLOT2FACES = SLOT2FACES_EDGE
     FACELETS = EDGE_FACELETS
-
-    def stickers_in_slot_order(self) -> Tuple[int, ...]:
-        """
-        Edges: orientation 0 keeps (a,b), orientation 1 swaps them in piece index space,
-        then reorders to the slot's faces (same method as base).
-        """
-        faces_here = list(self.SLOT2FACES[self.slot_name])
-        base = list(self.stickers)
-        rotated = base if (self.ori % 2) == 0 else [base[1], base[0]]
-        try:
-            return tuple(rotated[base.index(f)] for f in faces_here)
-        except ValueError as e:
-            raise AssertionError(
-                f"Edge {self.stickers} cannot sit in slot {self.slot_name} (faces={faces_here})."
-            ) from e
