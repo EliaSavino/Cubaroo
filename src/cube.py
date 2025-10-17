@@ -376,7 +376,8 @@ class Cube:
         """
         Heuristic score that rewards being solved with fewer *post-scramble* moves.
 
-            score = solved_fraction() / max(1, moves_since_scramble())
+            score = solved_fraction() / max(1, moves_since_scramble()
+            edit we drop the denom to just solved_fraction() (for now, we're trying different reward policies)
 
         Notes
         -----
@@ -384,7 +385,7 @@ class Cube:
         - Swap this out later for a domain-specific objective if desired.
         """
         denom = max(1, self.moves_since_scramble())
-        return self.solved_fraction() / denom
+        return self.solved_fraction()
     # ---------- VIEWS ----------
     def to_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -611,3 +612,16 @@ class Cube:
 
         for row in grid:
             print(" ".join(row))
+
+    def is_solved(self)->bool:
+        """
+        Check if the cube is in a solved state.
+        :return:
+        """
+        for i, c in enumerate(self.corners):
+            if c.slot_name != CORNER_SLOTS[i] or (c.ori % 3) != 0:
+                return False
+        for i, e in enumerate(self.edges):
+            if e.slot_name != EDGE_SLOTS[i] or (e.ori % 2) != 0:
+                return False
+        return True
