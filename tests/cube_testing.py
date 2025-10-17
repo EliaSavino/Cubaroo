@@ -28,8 +28,9 @@ moves = [
 ]
 
 c = Cube()
-c.scramble()
+# c.scramble()
 c.print_net(use_color=True)
+print(c.score())
 for m in "RRLLUUDDFFBB":
     # print([str(corn) for corn in c.corners])
     # print(c.to_facelets())
@@ -44,4 +45,5 @@ for m in "RRLLUUDDFFBB":
     # c.test_move(m)
 
 print(c.get_history())
+print(c.score())
 # c.plot_3d()
