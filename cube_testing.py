@@ -28,32 +28,20 @@ moves = [
 ]
 
 c = Cube()
+c.scramble()
+c.print_net(use_color=True)
 for m in "RRLLUUDDFFBB":
     # print([str(corn) for corn in c.corners])
     # print(c.to_facelets())
     print(f"Move: {m}\n")
     c.rotate(m, clockwise=True)
-    c.print_net(use_color=True)
+    # c.print_net(use_color=True)
     # c.plot_3d()
     # c.rotate(m, clockwise=False)
     print("\n")
     # print([str(corn) for corn in c.corners])
     # print(c.to_facelets())
     # c.test_move(m)
-c.plot_3d()
-c.print_net(use_color=True)
-# for m in "BBFFLLRRDDUU":
-#     # print([str(corn) for corn in c.corners])
-#     # print(c.to_facelets())
-#     print(f"Move: {m}\n")
-#     c.rotate(m, clockwise=False)
-#     c.print_net(use_color=True)
-#     # c.rotate(m, clockwise=False)
-#     print("\n")
-#     # print([str(corn) for corn in c.corners])
-#     # print(c.to_facelets())
-#     # c.test_move(m)
-# c.print_net(use_color=True)
-# c.plot_net()
 
-# slight improvement, but still not there. U and D work ok. R, L and F seem to work ok, except R, L flip the last face (i = 5) meaning if i do R on face 5 the left column rotates. and if i do L the right one rotates in the last face. F
+print(c.get_history())
+# c.plot_3d()

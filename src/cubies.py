@@ -9,7 +9,7 @@ Descr:
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, ClassVar
+from typing import Dict, List, Tuple, ClassVar, Iterator
 
 # Face ids: 0=U, 1=R, 2=F, 3=D, 4=L, 5=B
 CORNER_SLOTS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"]
@@ -105,6 +105,21 @@ def _rot(t: Tuple[int, ...], k: int) -> Tuple[int, ...]:
 
 @dataclass
 class Cubie:
+    """
+    Base dataclass for a single Rubik's Cube cubie (corner or edge).
+
+    Each cubie object represents a *piece*, not a facelet. Its state is defined
+    by:
+        - `slot_name`: the current slot (e.g. "URF", "UB", "FL", ...)
+        - `ori`: the current orientation relative to its canonical sticker order
+        - `stickers`: the tuple of face color IDs that identify this piece
+        - `piece_idx`: (optional) integer ID for tracking this piece across moves
+
+    Subclasses (CornerCubie, EdgeCubie) supply the following class variables:
+        - `ORI_MOD`: orientation modulus (3 for corners, 2 for edges)
+        - `SLOT2FACES`: mapping slot → tuple of face IDs defining face order
+        - `FACELETS`: mapping slot → list of (face, row, col) coordinates
+    """
     # current seat (slot) + orientation (relative to the piece’s canonical sticker order)
     slot_name: str
     ori: int
@@ -120,13 +135,28 @@ class Cubie:
     Name: ClassVar[str] = "Cubie"
 
     def move_to(self, dest_slot: str, delta_ori: int) -> None:
-        """Re-seat the SAME cubie object into a new slot and update its orientation in place."""
+        """
+        Re-seat this cubie into a new slot and update its orientation in place.
+
+        Args:
+            dest_slot: The destination slot name after the move.
+            delta_ori: Orientation delta (mod ORI_MOD) to add when moving.
+        """
         self.slot_name = dest_slot
         self.ori = (self.ori + delta_ori) % self.ORI_MOD
 
     # --- rendering helpers ---
     def stickers_in_slot_order(self) -> Tuple[int, ...]:
-        """Return this piece’s sticker colors arranged to the slot order, given current ori."""
+        """
+        Return this cubie’s sticker colors arranged in the slot's face order.
+
+        The order depends on the cubie’s current orientation (`ori`):
+          - For corners (ORI_MOD == 3), rotate the canonical color tuple by `ori`.
+          - For edges  (ORI_MOD == 2), swap the two colors if `ori == 1`.
+
+        Returns:
+            Tuple[int, ...]: The oriented color tuple matching the slot face order.
+        """
         if self.ORI_MOD == 3:  # corner
             base = list(self.stickers)
             o = self.ori % 3
@@ -135,10 +165,17 @@ class Cubie:
             a, b = self.stickers
             return (a, b) if (self.ori % 2) == 0 else (b, a)
 
-    def placements_for_slot(self):
+    def placements_for_slot(self) -> Iterator[Tuple[int, int, int, int]]:
         """
-        Yield (face, r, c, color) for this cubie’s stickers, using current slot+ori.
-        Zips slot faces with the oriented colors, then looks up absolute facelet coords.
+        Yield the absolute placement of this cubie’s stickers on the cube.
+
+        Each yielded tuple corresponds to a single sticker on a specific facelet.
+
+        Yields:
+            Tuple[face_id, row, col, color]:
+                - `face_id`: integer ID (0–5) of the face
+                - `row`, `col`: coordinates (0–2) on that face
+                - `color`: color ID (0–5) of the sticker
         """
         colors = self.stickers_in_slot_order()
         faces = self.SLOT2FACES[self.slot_name]
