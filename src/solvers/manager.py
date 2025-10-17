@@ -244,7 +244,7 @@ class DQNTrainer:
 
         # metrics/logging
         self._best_sr = -1.0
-        self.log_path = getattr(self.cfg, "log_path", "train_log.csv")
+        self.log_path = getattr(self.cfg, "log_path", f"train_log{self.cfg.experiment_name}.csv")
         if not os.path.exists(self.log_path):
             with open(self.log_path, "w", newline="") as f:
                 csv.writer(f).writerow(
@@ -468,14 +468,14 @@ if __name__ == "__main__":
     from src.models.tiny_transformer import TransformerQNet
 
     # One-hot + MLP
-    env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
-    model = MLPQNet(in_dim=256, hidden=512)          # baseline
-    cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp.pt")
-    DQNTrainer(env, model, cfg).train(start_scramble=4)
+    # env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
+    # model = MLPQNet(in_dim=256, hidden=512)          # baseline
+    # cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp.pt")
+    # DQNTrainer(env, model, cfg).train(start_scramble=4)
 
     # # Index + Transformer
-    # env = CubeGymCubie(encoder=IndexCubieEncoder(), alpha=1.0, max_steps=200)
-    # model = TransformerQNet(d_model=128, nhead=8, num_layers=3)
-    # cfg = DQNConfig(total_steps=300_000, save_path="models/cube_tr.pt")
-    # DQNTrainer(env, model, cfg).train(start_scramble=4)
+    env = CubeGymCubie(encoder=IndexCubieEncoder(), alpha=1.0, max_steps=200)
+    model = TransformerQNet(d_model=128, nhead=8, num_layers=3)
+    cfg = DQNConfig(total_steps=300_000, save_path="models/cube_tr.pt", output_dir="runs", experiment_name="cube_dqn_transformer")
+    DQNTrainer(env, model, cfg).train(start_scramble=4)
 #
