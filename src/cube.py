@@ -1,4 +1,4 @@
-'''
+"""
 Author: Elia Savino
 github: github.com/EliaSavino
 
@@ -6,75 +6,106 @@ Happy Hacking!
 
 Descr:
 
-'''
+"""
+
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from src.cubies import EdgeCubie, CornerCubie, CORNER_SLOTS, EDGE_SLOTS, CORNER_PIECE_COLORS, EDGE_PIECE_COLORS
+from src.cubies import (
+    EdgeCubie,
+    CornerCubie,
+    CORNER_SLOTS,
+    EDGE_SLOTS,
+    CORNER_PIECE_COLORS,
+    EDGE_PIECE_COLORS,
+)
 
 # Move tables (on *slot indices*, not on piece ids)
 CORN_PERM = {
-    'U':[1,2,3,0,4,5,6,7],
-    'D':[0,1,2,3,5,6,7,4],
-    'R':[4,1,2,0,7,5,6,3],
-    'L':[0,5,1,3,4,6,2,7],
-    'F':[1,5,2,3,0,4,6,7],
-    'B':[0,1,6,2,4,5,7,3],
+    "U": [1, 2, 3, 0, 4, 5, 6, 7],
+    "D": [0, 1, 2, 3, 5, 6, 7, 4],
+    "R": [4, 1, 2, 0, 7, 5, 6, 3],
+    "L": [0, 5, 1, 3, 4, 6, 2, 7],
+    "F": [1, 5, 2, 3, 0, 4, 6, 7],
+    "B": [0, 1, 6, 2, 4, 5, 7, 3],
 }
 CORN_ORI = {
-    'U':[0]*8,'D':[0]*8,
-    'R':[2,0,0,1,1,0,0,2],
-    'L':[0,1,2,0,0,2,1,0],
-    'F':[1,2,0,0,2,1,0,0],
-    'B':[0,0,1,2,0,0,2,1],
+    "U": [0] * 8,
+    "D": [0] * 8,
+    "R": [2, 0, 0, 1, 1, 0, 0, 2],
+    "L": [0, 1, 2, 0, 0, 2, 1, 0],
+    "F": [1, 2, 0, 0, 2, 1, 0, 0],
+    "B": [0, 0, 1, 2, 0, 0, 2, 1],
 }
 EDGE_PERM = {
-    'U':[1,2,3,0,4,5,6,7,8,9,10,11],
-    'D':[0,1,2,3,5,6,7,4,8,9,10,11],
-    'R':[8,1,2,3,11,5,6,7,4,9,10,0],
-    'L':[0,1,9,3,4,5,10,7,8,6,2,11],
-    'F':[0,9,2,3,4,8,6,7,1,5,10,11],
-    'B':[0,1,2,10,4,5,6,11,8,9,3,7],
+    "U": [1, 2, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11],
+    "D": [0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11],
+    "R": [8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0],
+    "L": [0, 1, 9, 3, 4, 5, 10, 7, 8, 6, 2, 11],
+    "F": [0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11],
+    # 'B':[0,1,2,10,4,5,6,11,8,9,3,7],
+    "B": [0, 1, 2, 10, 4, 5, 6, 11, 8, 9, 7, 3],
 }
 EDGE_ORI = {
-    'U':[0]*12,'D':[0]*12,'R':[0]*12,'L':[0]*12,
-    'F':[0,1,0,0,0,1,0,0,1,1,0,0],
-    'B':[0,0,0,1,0,0,0,1,0,0,1,1],
+    "U": [0] * 12,
+    "D": [0] * 12,
+    "R": [0] * 12,
+    "L": [0] * 12,
+    "F": [0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0],
+    "B": [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1],
 }
 
+
 def invert_perm_and_delta(perm: list[int], delta: list[int], mod: int):
-    inv_perm  = [0]*len(perm)
-    inv_delta = [0]*len(perm)
+    inv_perm = [0] * len(perm)
+    inv_delta = [0] * len(perm)
     for dest_idx, src_idx in enumerate(perm):
-        inv_perm[src_idx]  = dest_idx
+        inv_perm[src_idx] = dest_idx
         inv_delta[src_idx] = (-delta[dest_idx]) % mod
     return inv_perm, inv_delta
 
+
 class Cube:
     """Cubies are the *only* state. Arrays/facelets are derived on demand."""
+
     _COLORS = {0: "white", 1: "blue", 2: "orange", 3: "yellow", 4: "green", 5: "red"}
+
     def __init__(self):
         self.corners: List[CornerCubie] = [
-            CornerCubie(slot_name=CORNER_SLOTS[i], ori=0, stickers=CORNER_PIECE_COLORS[i]) for i in range(8)
+            CornerCubie(
+                slot_name=CORNER_SLOTS[i],
+                ori=0,
+                stickers=CORNER_PIECE_COLORS[i],
+                piece_idx=i,
+            )
+            for i in range(8)
         ]
         self.edges: List[EdgeCubie] = [
-            EdgeCubie(slot_name=EDGE_SLOTS[i], ori=0, stickers=EDGE_PIECE_COLORS[i]) for i in range(12)
+            EdgeCubie(
+                slot_name=EDGE_SLOTS[i],
+                ori=0,
+                stickers=EDGE_PIECE_COLORS[i],
+                piece_idx=i,
+            )
+            for i in range(12)
         ]
 
     def rotate(self, face: str, clockwise: bool = True):
         # look up move tables
-        cperm = CORN_PERM[face]; cdel = CORN_ORI[face]
-        eperm = EDGE_PERM[face]; edel = EDGE_ORI[face]
+        cperm = CORN_PERM[face]
+        cdel = CORN_ORI[face]
+        eperm = EDGE_PERM[face]
+        edel = EDGE_ORI[face]
         if not clockwise:
             cperm, cdel = invert_perm_and_delta(cperm, cdel, 3)
             eperm, edel = invert_perm_and_delta(eperm, edel, 2)
 
         # re-seat corner objects according to perm, updating ori in place
         old_corners = self.corners[:]
-        new_corners = [None]*8
+        new_corners = [None] * 8
         for dest_idx, src_idx in enumerate(cperm):
             cubie = old_corners[src_idx]
             cubie.move_to(CORNER_SLOTS[dest_idx], cdel[dest_idx])
@@ -83,7 +114,7 @@ class Cube:
 
         # re-seat edge objects
         old_edges = self.edges[:]
-        new_edges = [None]*12
+        new_edges = [None] * 12
         for dest_idx, src_idx in enumerate(eperm):
             cubie = old_edges[src_idx]
             cubie.move_to(EDGE_SLOTS[dest_idx], edel[dest_idx])
@@ -91,7 +122,7 @@ class Cube:
         self.edges = new_edges
 
     # ---------- VIEWS ----------
-    def to_arrays(self) -> Tuple[np.ndarray,np.ndarray,np.ndarray,np.ndarray]:
+    def to_arrays(self) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Materialize (positions, orientations) arrays from cubies."""
         # positions are: which *piece id* currently sits in each slot index
         corner_pos = np.empty(8, dtype=np.int8)
@@ -118,22 +149,22 @@ class Cube:
             F[f, :, :] = f  # fill + centers
 
         for cubie in self.corners:
-            for (face, r, c, col) in cubie.placements_for_slot():
+            for face, r, c, col in cubie.placements_for_slot():
                 F[face, r, c] = col
 
         for cubie in self.edges:
-            for (face, r, c, col) in cubie.placements_for_slot():
+            for face, r, c, col in cubie.placements_for_slot():
                 F[face, r, c] = col
 
         return F
 
     # ---------- helpers ----------
-    def _home_slot_of_corner(self, stickers: Tuple[int,int,int]) -> str:
+    def _home_slot_of_corner(self, stickers: Tuple[int, int, int]) -> str:
         # piece id equals its home slot index; find by color tuple
         idx = CORNER_PIECE_COLORS.index(stickers)
         return CORNER_SLOTS[idx]
 
-    def _home_slot_of_edge(self, stickers: Tuple[int,int]) -> str:
+    def _home_slot_of_edge(self, stickers: Tuple[int, int]) -> str:
         idx = EDGE_PIECE_COLORS.index(stickers)
         return EDGE_SLOTS[idx]
 
@@ -143,20 +174,26 @@ class Cube:
         eo = sum(e.ori for e in self.edges) % 2
         assert co == 0 and eo == 0, (co, eo)
 
-    def test_move(self, m:str):
-        snap = ([(c.slot_name,c.ori,c.stickers) for c in self.corners],
-                [(e.slot_name,e.ori,e.stickers) for e in self.edges])
+    def test_move(self, m: str):
+        snap = (
+            [(c.slot_name, c.ori, c.stickers) for c in self.corners],
+            [(e.slot_name, e.ori, e.stickers) for e in self.edges],
+        )
         self.rotate(m, True)
         self.rotate(m, False)
-        back = ([(c.slot_name,c.ori,c.stickers) for c in self.corners],
-                [(e.slot_name,e.ori,e.stickers) for e in self.edges])
+        back = (
+            [(c.slot_name, c.ori, c.stickers) for c in self.corners],
+            [(e.slot_name, e.ori, e.stickers) for e in self.edges],
+        )
         assert snap == back
-        for _ in range(4): self.rotate(m, True)
-        back2 = ([(c.slot_name,c.ori,c.stickers) for c in self.corners],
-                 [(e.slot_name,e.ori,e.stickers) for e in self.edges])
+        for _ in range(4):
+            self.rotate(m, True)
+        back2 = (
+            [(c.slot_name, c.ori, c.stickers) for c in self.corners],
+            [(e.slot_name, e.ori, e.stickers) for e in self.edges],
+        )
         assert snap == back2
         self.assert_invariants()
-
 
     def plot_3d(self, ax=None, figsize=(6, 6), edgecolor="k"):
         """
@@ -175,12 +212,12 @@ class Cube:
 
         # face: (origin, u-axis, v-axis) in 3D space
         step = 1.0
-        half = 1.5
+        half = 0.5*3
         face_defs = {
             0: ((-half, -half, half), (step, 0, 0), (0, step, 0)),  # U  (z = +)
             3: ((-half, -half, -half), (step, 0, 0), (0, step, 0)),  # D  (z = -)
             2: ((-half, half, -half), (step, 0, 0), (0, 0, step)),  # F  (y = +)
-            5: ((-half, -half, -half), (step, 0, 0), (0, 0, step)),  # B  (y = -)
+            5: ((half, -half, -half), (-step, 0, 0), (0, 0, step)),  # B  (y = -)
             1: ((half, -half, -half), (0, step, 0), (0, 0, step)),  # R  (x = +)
             4: ((-half, -half, -half), (0, step, 0), (0, 0, step)),  # L  (x = -)
         }
@@ -191,7 +228,7 @@ class Cube:
                     col = self._COLORS[int(F[f, r, c])]
                     # square corners in (u,v) space → 3D
                     corners = []
-                    for (u, v) in [(c, r), (c + 1, r), (c + 1, r + 1), (c, r + 1)]:
+                    for u, v in [(c, r), (c + 1, r), (c + 1, r + 1), (c, r + 1)]:
                         x = origin[0] + du[0] * u + dv[0] * v
                         y = origin[1] + du[1] * u + dv[1] * v
                         z = origin[2] + du[2] * u + dv[2] * v
@@ -203,9 +240,9 @@ class Cube:
 
         ax.set_axis_off()
         # light padding around the cube
-        ax.set_xlim(-0.5, 2.5)
-        ax.set_ylim(-0.5, 2.5)
-        ax.set_zlim(-0.5, 2.5)
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_zlim(-1.5, 1.5)
         if fig is not None:
             plt.show()
 
@@ -240,21 +277,37 @@ class Cube:
                 for c in range(3):
                     y0 = top + r
                     x0 = left + c
-                    ax.add_patch(plt.Rectangle(
-                        (x0 * size, y0 * size), size, size,
-                        facecolor=self._COLORS[int(F[face_id, r, c])],
-                        edgecolor="k"
-                    ))
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (x0 * size, y0 * size),
+                            size,
+                            size,
+                            facecolor=self._COLORS[int(F[face_id, r, c])],
+                            edgecolor="k",
+                        )
+                    )
             if grid:
                 # thicker outline for the whole face block
-                ax.add_patch(plt.Rectangle(
-                    (left * size, top * size), 3 * size, 3 * size,
-                    fill=False, linewidth=2, edgecolor="k"
-                ))
+                ax.add_patch(
+                    plt.Rectangle(
+                        (left * size, top * size),
+                        3 * size,
+                        3 * size,
+                        fill=False,
+                        linewidth=2,
+                        edgecolor="k",
+                    )
+                )
                 # label
-                ax.text((left + 1.5) * size, (top - 0.4) * size,
-                        {0: "U", 1: "R", 2: "F", 3: "D", 4: "L", 5: "B"}[face_id],
-                        ha="center", va="bottom", fontsize=12, weight="bold")
+                ax.text(
+                    (left + 1.5) * size,
+                    (top - 0.4) * size,
+                    {0: "U", 1: "R", 2: "F", 3: "D", 4: "L", 5: "B"}[face_id],
+                    ha="center",
+                    va="bottom",
+                    fontsize=12,
+                    weight="bold",
+                )
 
         ax.set_aspect("equal")
         ax.set_axis_off()
@@ -263,3 +316,47 @@ class Cube:
         ax.invert_yaxis()  # origin top-left for readability
         if fig is not None:
             plt.show()
+
+    def print_net(self, use_color: bool = True):
+        F = self.to_facelets()
+        # face units (0..3), we’ll scale by 3 below
+        layout = {
+            0: (0, 1),  # U above F
+            4: (1, 0),  # L F R B in a row
+            2: (1, 1),
+            1: (1, 2),
+            5: (1, 3),
+            3: (2, 1),  # D below F
+        }
+
+        COLOR_CODES = {
+            0: "\033[97m",
+            1: "\033[94m",
+            2: "\033[95m",
+            3: "\033[93m",
+            4: "\033[92m",
+            5: "\033[91m",
+        }
+        RESET = "\033[0m"
+
+        SCALE = 3  # 3 stickers per face side
+        max_rt = max(rt for rt, _ in layout.values())
+        max_ct = max(ct for _, ct in layout.values())
+        rows = (max_rt + 1) * SCALE
+        cols = (max_ct + 1) * SCALE
+        grid = [[" " for _ in range(cols)] for _ in range(rows)]
+
+        for face_id, (rt, ct) in layout.items():
+            top = rt * SCALE
+            left = ct * SCALE
+            for r in range(3):
+                for c in range(3):
+                    rr = top + r
+                    cc = left + c
+                    val = int(F[face_id, r, c])
+                    grid[rr][cc] = (
+                        f"{COLOR_CODES[val]}{val}{RESET}" if use_color else str(val)
+                    )
+
+        for row in grid:
+            print(" ".join(row))
