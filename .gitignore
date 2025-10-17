@@ -4,3 +4,6 @@
 *.pyo
 */__pycache__/
 src/__pycache__/cube.cpython-312.pyc
+.DS_Store/
+/.DS_Store/
+.DS_Store

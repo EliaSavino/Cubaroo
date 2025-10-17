@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 from typing import Optional, Tuple, Callable
-import os, time, math, random
+import os, time, math, random, csv
 import numpy as np
 import torch
 import torch.nn as nn
@@ -38,40 +38,18 @@ class Replay:
         drop_after_sample (bool): If True, sampled items are deleted from buffer.
     """
 
-    def __init__(
-        self,
-        cap: int = 300_000,
-        prioritized: bool = False,
-        alpha: float = 0.6,
-        drop_after_sample: bool = False,
-    ):
+
+    def __init__(self, cap: int = 300_000, prioritized: bool = False, alpha: float = 0.6, drop_after_sample: bool = False):
         self.cap = cap
         self.buf: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
         self.pos = 0
-
         self.prioritized = prioritized
         self.alpha = alpha
-        self.drop_after_sample = drop_after_sample
-
-        # for PER
+        self.drop_after_sample = drop_after_sample  # keep False for PER
         self.priorities = np.zeros((cap,), dtype=np.float32)
-        self.eps = 1e-6  # avoids zero-priority
-
-    # ----------------------------------------------------------------------
+        self.eps = 1e-6  # min priority to avoid zeros/NaNs
 
     def push(self, s, a: int, r: float, ns, d: float, td_error: float | None = None):
-        """
-        Add a single transition to the replay buffer.
-
-        Args:
-            s: State (array-like)
-            a (int): Action index
-            r (float): Reward
-            ns: Next state (array-like)
-            d (float): Done flag (1.0 if terminal, 0.0 otherwise)
-            td_error (float | None): Optional initial priority for PER.
-                                     If None, uses max priority so new data are sampled early.
-        """
         item = (s, a, r, ns, d)
         if len(self.buf) < self.cap:
             self.buf.append(item)
@@ -80,7 +58,6 @@ class Replay:
 
         if self.prioritized:
             if td_error is None:
-                # use max(nonzero) or 1.0 to ensure new items are sampled
                 current_len = max(1, len(self.buf))
                 max_prio = self.priorities[:current_len].max()
                 if not np.isfinite(max_prio) or max_prio <= 0:
@@ -94,35 +71,20 @@ class Replay:
 
         self.pos = (self.pos + 1) % self.cap
 
-    # ----------------------------------------------------------------------
-
     def sample(self, batch: int):
-        """
-        Sample a minibatch of transitions.
-
-        If prioritized=True, samples are weighted by priority^alpha.
-        If drop_after_sample=True, sampled transitions are deleted from buffer.
-
-        Returns:
-            Tuple of (states, actions, rewards, next_states, dones, indices, weights)
-            where 'weights' = importance-sampling correction (uniform → ones).
-        """
         n = len(self.buf)
         assert n > 0, "Cannot sample from empty buffer"
 
         if self.prioritized:
             raw = self.priorities[:n]
-            # guard against zeros / NaNs
             raw = np.where(np.isfinite(raw) & (raw > 0), raw, self.eps)
             ps = np.power(raw, self.alpha)
             Z = ps.sum()
             if not np.isfinite(Z) or Z <= 0:
-                # fallback to uniform
                 probs = np.full(n, 1.0 / n, dtype=np.float32)
             else:
                 probs = ps / Z
             idx = np.random.choice(n, size=batch, p=probs)
-            # importance weights
             weights = (n * probs[idx]) ** (-1)
             weights /= weights.max()
         else:
@@ -130,49 +92,45 @@ class Replay:
             weights = np.ones(batch, dtype=np.float32)
 
         s, a, r, ns, d = zip(*[self.buf[i] for i in idx])
-        return (np.stack(s), np.array(a), np.array(r, np.float32),
-                np.stack(ns), np.array(d, np.float32), idx, weights.astype(np.float32))
+        out = (np.stack(s),
+               np.array(a),
+               np.array(r, dtype=np.float32),
+               np.stack(ns),
+               np.array(d, dtype=np.float32),
+               idx,
+               weights.astype(np.float32))
 
-    # ----------------------------------------------------------------------
+        if self.drop_after_sample:
+            self._delete_indices(idx)
 
-    def update_priorities(self, idx: np.ndarray, td_errors: np.ndarray):
-        """
-        Update priorities for a set of sampled transitions (PER only).
+        return out
 
-        Args:
-            idx (np.ndarray): Indices of transitions to update.
-            td_errors (np.ndarray): Corresponding TD errors.
-        """
+    def update_priorities(self, idx, td_errors):
         if not self.prioritized:
             return
-        # sanitize
         td = np.abs(np.asarray(td_errors, dtype=np.float32))
         td[~np.isfinite(td)] = 1.0
         td = np.maximum(td, self.eps)
-        # update only valid indices
         n = len(self.buf)
         idx = np.asarray(idx)
         valid = (idx >= 0) & (idx < n)
         self.priorities[idx[valid]] = td[valid]
 
-    # ----------------------------------------------------------------------
-
-    def _delete_indices(self, idx: np.ndarray):
-        """Remove sampled transitions (internal helper)."""
-        idx = sorted(set(idx), reverse=True)
+    def _delete_indices(self, idx):
+        idx = sorted(set(int(i) for i in idx), reverse=True)
         for i in idx:
             if i < len(self.buf):
                 self.buf.pop(i)
-                if self.prioritized:
-                    self.priorities = np.delete(self.priorities, i)
+                # keep priorities length aligned (simple but O(n))
+                self.priorities = np.delete(self.priorities, i)
 
-    # ----------------------------------------------------------------------
-
-    def __len__(self):
-        """Return the number of stored transitions."""
-        return len(self.buf)
+    def __len__(self): return len(self.buf)
 
 # ----- Config ----------------------------------------------------------------
+def polyak_update(target: nn.Module, online: nn.Module, tau: float = 0.005):
+    with torch.no_grad():
+        for tp, p in zip(target.parameters(), online.parameters()):
+            tp.data.mul_(1 - tau).add_(tau * p.data)
 
 @dataclass
 class DQNConfig:
@@ -235,6 +193,8 @@ class DQNConfig:
 
     save_path: str = "cube_dqn.pt"
     # File path to save final model weights (best checkpoints optional).
+    experiment_name: str = "cube_dqn"
+    output_dir: str = "runs"
 
 # ----- Utilities --------------------------------------------------------------
 
@@ -280,9 +240,60 @@ class DQNTrainer:
             print("  ! Model compilation failed; continuing without it.")
 
         self.optim = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
-        self.replay = Replay(cap=200000, prioritized=True, alpha=0.6, drop_after_sample=False)
+        self.replay = Replay(cap=100_000, prioritized=True, alpha=0.6, drop_after_sample=False)
+
+        # metrics/logging
+        self._best_sr = -1.0
+        self.log_path = getattr(self.cfg, "log_path", "train_log.csv")
+        if not os.path.exists(self.log_path):
+            with open(self.log_path, "w", newline="") as f:
+                csv.writer(f).writerow(
+                    ["step", "scramble", "epsilon", "sr", "avg_len", "avg_return", "loss", "replay_fill", "td_mean",
+                     "td_max"]
+                )
+        self._td_mean = 0.0
+        self._td_max = 0.0
         self.obs_dtype: Optional[torch.dtype] = None
         self.last_loss = 0.0
+        exp_name = getattr(self.cfg, "experiment_name", None)
+        if not exp_name:
+            exp_name = time.strftime("exp_%Y%m%d-%H%M%S")
+        out_root = getattr(self.cfg, "output_dir", "runs")
+
+        self.exp_dir = os.path.join(out_root, exp_name)
+        os.makedirs(self.exp_dir, exist_ok=True)
+
+        # save paths
+        self.final_path = os.path.join(self.exp_dir, "final.pt")
+        self.best_path = os.path.join(self.exp_dir, "best.pt")
+        self.last_path = os.path.join(self.exp_dir, "last.pt")
+
+        # CSV log lives in the exp dir
+        self.log_path = os.path.join(self.exp_dir, "train_log.csv")
+
+        # init CSV if new
+        if not os.path.exists(self.log_path):
+            with open(self.log_path, "w", newline="") as f:
+                csv.writer(f).writerow(
+                    ["step", "scramble", "epsilon", "sr", "avg_len", "avg_return",
+                     "loss", "replay_fill", "td_mean", "td_max"]
+                )
+
+        # best SR tracker
+        self._best_sr = -1.0
+        self._td_mean = 0.0
+        self._td_max = 0.0
+
+    def _save_ckpt(self, tag: str, step: Optional[int] = None):
+        if tag == "best":
+            path = self.best_path
+        elif tag == "last":
+            path = self.last_path
+        else:
+            fname = f"{tag}.pt" if step is None else f"{tag}_{step}.pt"
+            path = os.path.join(self.exp_dir, fname)
+        torch.save(self.model.state_dict(), path)
+        print(f"saved {tag} → {path}")
 
     # simple one-episode eval (greedy)
     @torch.no_grad()
@@ -317,6 +328,15 @@ class DQNTrainer:
         last_eval_at = -self.cfg.eval_every
         last_log_at = 0
         current_scramble = start_scramble
+        beta0 = 0.4
+        beta1 = 1.0
+
+        def per_beta(step):
+            t = min(1.0, step / self.cfg.total_steps)
+            return beta0 + (beta1 - beta0) * t
+
+        lock_eval_windows = 5  # min evals between curriculum bumps
+        since_bump = 0
 
         print(f"Starting training on device={self.device} | steps={self.cfg.total_steps:,} | scramble={current_scramble}")
         print("-" * 90)
@@ -341,13 +361,20 @@ class DQNTrainer:
 
             # Learn
             if len(self.replay) >= self.cfg.warmup_steps and (step % self.cfg.train_every == 0):
-                s, a_b, r_b, ns, d_b, idx, w_b = self.replay.sample(self.cfg.batch_size)  # <-- grab idx, weights
+                # --- sample with indices + IS weights ---
+                s, a_b, r_b, ns, d_b, idx, w_b = self.replay.sample(self.cfg.batch_size)
+
                 s_t = to_device(s, self.device, self.obs_dtype)
                 ns_t = to_device(ns, self.device, self.obs_dtype)
                 a_t = torch.from_numpy(a_b).long().to(self.device)
                 r_t = torch.from_numpy(r_b).to(self.device)
                 d_t = torch.from_numpy(d_b).to(self.device)
-                w_t = torch.from_numpy(w_b).to(self.device)  # <-- IS weights
+
+
+
+                # anneal beta
+                beta = per_beta(step)
+                w_t = torch.from_numpy(w_b).to(self.device) ** beta  # [B]
 
                 # Q(s,a)
                 q_sa = self.model(s_t).gather(1, a_t.unsqueeze(1)).squeeze(1)
@@ -358,27 +385,32 @@ class DQNTrainer:
                     q_next = self.target(ns_t).gather(1, next_best.unsqueeze(1)).squeeze(1)
                     y = r_t + self.cfg.gamma * (1.0 - d_t) * q_next
 
-                # TD error
+                # TD error & PER-weighted Huber loss
                 td_error = y - q_sa  # [B]
+                per_sample = F.smooth_l1_loss(q_sa, y, reduction="none")
+                loss = (w_t * per_sample).mean()
 
-                # Weighted Huber loss (PER)
-                per_sample_loss = F.smooth_l1_loss(q_sa, y, reduction="none")  # [B]
-                loss = (w_t * per_sample_loss).mean()
-
-                self.optim.zero_grad()
+                self.optim.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.optim.step()
                 self.last_loss = loss.item()
 
-                # Update priorities with |TD error|
+                # priorities: |TD error|
                 with torch.no_grad():
-                    prios = td_error.abs().clamp_(min=1e-6).detach().cpu().numpy()
-                self.replay.update_priorities(idx, prios)  # <-- use sampled idx
+                    prios = td_error.detach().abs().clamp_(min=1e-6).cpu().numpy()
+                self.replay.update_priorities(idx, prios)
 
-                # target sync (or switch to Polyak if you want smoother)
-                if step % self.cfg.target_sync_every == 0:
-                    self.target.load_state_dict(self.model.state_dict())
+                # ---- target update: choose ONE of these ----
+                # (A) SOFT/POLYAK (recommended for smoother learning)
+                polyak_update(self.target, self.model, tau=0.005)
+                # (B) or keep your periodic hard copy (then comment Polyak above)
+                # if step % self.cfg.target_sync_every == 0:
+                #     self.target.load_state_dict(self.model.state_dict())
+
+                # td stats for CSV logs
+                self._td_mean = float(td_error.detach().abs().mean().item())
+                self._td_max = float(td_error.detach().abs().max().item())
 
             # --- lightweight console log every 1000 steps ---
             if step - last_log_at >= 1000:
@@ -387,6 +419,7 @@ class DQNTrainer:
                 replay_fill = len(self.replay) / self.replay.cap * 100
                 print(f"step {step:>7d} | eps={eps:5.3f} | "
                       f"loss={self.last_loss:8.3e} | "
+                      f"td|mean={self._td_mean:7.2e} max={self._td_max:7.2e} | "
                       f"replay={replay_fill:6.2f}% | "
                       f"cur_scr={current_scramble:2d} | "
                       f"avg_ret={avg_ret:7.3e}", flush=True)
@@ -399,19 +432,34 @@ class DQNTrainer:
                 dt = (time.time() - t0) / 60
                 print("=" * 90)
                 print(f"[{step:>8}] SCR={current_scramble:2d} | eps={eps:5.3f} | "
-                      f"SR={sr*100:5.1f}% | avg_len={avg_len:5.1f} | "
+                      f"SR={sr * 100:5.1f}% | avg_len={avg_len:5.1f} | "
                       f"avg_return={avg_ret:7.3f} | "
                       f"loss={self.last_loss:8.5f} | t={dt:5.1f} min")
                 print("=" * 90)
-                if sr >= self.cfg.curriculum_success and current_scramble < self.cfg.curriculum_max_scramble:
+
+                # CSV log
+                replay_fill = len(self.replay) / self.replay.cap
+                with open(self.log_path, "a", newline="") as f:
+                    csv.writer(f).writerow([step, current_scramble, eps, sr, avg_len, avg_ret,
+                                            self.last_loss, replay_fill, self._td_mean, self._td_max])
+
+                # Checkpoint if best SR
+                if sr > self._best_sr:
+                    self._best_sr = sr
+                    self._save_ckpt("best")
+
+                # curriculum with lock
+                since_bump += 1
+                if sr >= self.cfg.curriculum_success and current_scramble < self.cfg.curriculum_max_scramble and since_bump >= lock_eval_windows:
                     current_scramble += 2
+                    since_bump = 0
                     print(f"  ↪ Curriculum bump: scramble → {current_scramble}")
 
         # --- save model at the end ---
-        os.makedirs(os.path.dirname(self.cfg.save_path) or ".", exist_ok=True)
-        torch.save(self.model.state_dict(), self.cfg.save_path)
+        os.makedirs(self.exp_dir, exist_ok=True)
+        torch.save(self.model.state_dict(), self.final_path)
         total_time = (time.time() - t0) / 60
-        print(f"\n Training finished in {total_time:.1f} min — model saved to {self.cfg.save_path}")
+        print(f"\n Training finished in {total_time:.1f} min — final model saved to {self.final_path}")
 
 # ----- Example usage ----------------------------------------------------------
 if __name__ == "__main__":

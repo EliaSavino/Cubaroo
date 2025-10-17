@@ -100,7 +100,7 @@ class CubeGymCubie:
 
         solved = self.cube.is_solved()
         if solved:
-            score+= 2# bonus for solving
+            score+= 5# bonus for solving
         # history:
         history = self.cube.get_history()
         history = history[history['phase'] == 'solve']
