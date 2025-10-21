@@ -25,8 +25,9 @@ class MLPQNet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, n_actions),
+            nn.Linear(hidden, int(0.5*hidden)), nn.ReLU(inplace=True),
+            nn.Linear(int(0.5*hidden), int(0.1*hidden)), nn.ReLU(inplace=True),
+            nn.Linear(int(0.1*hidden), n_actions),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
