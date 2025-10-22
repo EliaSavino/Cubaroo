@@ -36,31 +36,3 @@ class MLPQNet(nn.Module):
         returns: [B, n_actions] Q-values
         """
         return self.net(x)
-
-    @torch.no_grad()
-    def act(self, x: torch.Tensor, epsilon: float = 0.0, action_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        ε-greedy action selection.
-        x: [B, 256]
-        action_mask: optional [B, n_actions] with 0 for allowed, -inf for banned (or bool: True=allow, False=ban).
-        """
-        if epsilon > 0.0 and torch.rand(()) < epsilon:
-            # random allowed action
-            if action_mask is None:
-                return torch.randint(0, N_ACTIONS, (x.size(0),), device=x.device)
-            else:
-                if action_mask.dtype == torch.bool:
-                    probs = action_mask.float()
-                else:
-                    probs = torch.isfinite(action_mask).float()
-                probs = probs / probs.sum(dim=-1, keepdim=True)
-                return torch.multinomial(probs, 1).squeeze(1)
-        q = self.forward(x)
-        if action_mask is not None:
-            if action_mask.dtype == torch.bool:
-                # mask False (disallowed) with -inf
-                mask = torch.where(action_mask, torch.zeros_like(q), torch.full_like(q, float("-inf")))
-                q = q + mask
-            else:
-                q = q + action_mask  # expect 0 for allowed, -inf for banned
-        return q.argmax(dim=-1)

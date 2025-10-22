@@ -18,6 +18,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from src.models.base_model import EpsGreedyPolicy, TorchQAdapter
+
+
 # ----- Minimal replay buffer --------------------------------------------------
 
 class Replay:
@@ -467,15 +470,16 @@ if __name__ == "__main__":
     from src.models.mlpq_net import MLPQNet
     from src.models.tiny_transformer import TransformerQNet
 
+
     # One-hot + MLP
-    # env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
-    # model = MLPQNet(in_dim=256, hidden=512)          # baseline
-    # cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp.pt")
-    # DQNTrainer(env, model, cfg).train(start_scramble=4)
+    env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
+    model = MLPQNet(in_dim=256, hidden=512)          # baseline
+    cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp.pt")
+    DQNTrainer(env, model, cfg).train(start_scramble=4)
 
     # # Index + Transformer
-    env = CubeGymCubie(encoder=IndexCubieEncoder(), alpha=1.0, max_steps=200)
-    model = TransformerQNet(d_model=128, nhead=8, num_layers=3)
-    cfg = DQNConfig(total_steps=300_000, save_path="models/cube_tr.pt", output_dir="runs", experiment_name="cube_dqn_transformer")
-    DQNTrainer(env, model, cfg).train(start_scramble=4)
+    # env = CubeGymCubie(encoder=IndexCubieEncoder(), alpha=1.0, max_steps=200)
+    # model = TransformerQNet(d_model=128, nhead=8, num_layers=3)
+    # cfg = DQNConfig(total_steps=300_000, save_path="models/cube_tr.pt", output_dir="runs", experiment_name="cube_dqn_transformer")
+    # DQNTrainer(env, model, cfg).train(start_scramble=4)
 #

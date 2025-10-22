@@ -119,24 +119,3 @@ class TransformerQNet(nn.Module):
         x = x.mean(dim=1)                     # [B, D]
         q = self.head(x)                      # [B, n_actions]
         return q
-
-    @torch.no_grad()
-    def act(self, tokens: torch.Tensor, epsilon: float = 0.0, action_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        if epsilon > 0.0 and torch.rand(()) < epsilon:
-            if action_mask is None:
-                return torch.randint(0, N_ACTIONS, (tokens.size(0),), device=tokens.device)
-            else:
-                if action_mask.dtype == torch.bool:
-                    probs = action_mask.float()
-                else:
-                    probs = torch.isfinite(action_mask).float()
-                probs = probs / probs.sum(dim=-1, keepdim=True)
-                return torch.multinomial(probs, 1).squeeze(1)
-        q = self.forward(tokens)
-        if action_mask is not None:
-            if action_mask.dtype == torch.bool:
-                mask = torch.where(action_mask, torch.zeros_like(q), torch.full_like(q, float("-inf")))
-                q = q + mask
-            else:
-                q = q + action_mask
-        return q.argmax(dim=-1)
