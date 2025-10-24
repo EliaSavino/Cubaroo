@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.solvers.replay import Replay
 from src.models.actor import build_actor
-from src.solvers.solver_utilities import polyak_update, linear_epsilon, to_device, infer_obs_dtype
+from src.solvers.solver_utilities import polyak_update, linear_epsilon, to_device, infer_obs_dtype, _maybe_compile
 
 
 
@@ -165,16 +165,18 @@ class DQNTrainer:
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         self.model.to(self.device)
 
+
+
+        try:
+            self.model = _maybe_compile(self.model, self.device)
+        except Exception:
+            print("  ! Model compilation failed; continuing without it.")
+
         # Target net (frozen periodically)
         self.target = copy.deepcopy(self.model).to(self.device)
         for p in self.target.parameters():
             p.requires_grad_(False)
 
-        try:
-            self.model.compile()
-        except Exception:
-            print("  ! Model compilation failed; continuing without it.")
-        
         self.actor = build_actor(
             model=self.model,
             device=self.device,

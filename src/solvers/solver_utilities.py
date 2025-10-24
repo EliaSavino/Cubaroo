@@ -13,7 +13,6 @@ import numpy as np
 import torch
 from torch import nn as nn
 from typing import Union
-from src.solvers.manager import DQNConfig
 
 
 
@@ -196,3 +195,18 @@ def infer_obs_dtype(obs: np.ndarray) -> torch.dtype:
     True
     """
     return torch.long if np.issubdtype(obs.dtype, np.integer) else torch.float32
+
+def _maybe_compile(module: nn.Module, device: torch.device) -> nn.Module:
+    try:
+        import torch._dynamo as dynamo
+        dynamo.config.assume_static_by_default = True  # help static scheduling
+
+        if device.type == "mps":
+            # Avoid Inductor kernels on Metal; aot_eager builds the graph but executes eagerly
+            return torch.compile(module, backend="aot_eager", dynamic=False)
+        else:
+            # CUDA/CPU: inductor is fine
+            return torch.compile(module, mode="reduce-overhead", dynamic=False)
+    except Exception as e:
+        print(f"  ! torch.compile skipped: {e}")
+        return module

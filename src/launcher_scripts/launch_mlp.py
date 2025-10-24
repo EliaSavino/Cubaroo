@@ -41,7 +41,7 @@ def main():
     p.add_argument("--eval-every", type=int, default=10000)
     p.add_argument("--curriculum-success", type=float, default=0.30)
     p.add_argument("--curriculum-max", type=int, default=20)
-    p.add_argument("--exp", type=str, default="mlp_dqn_weekend")
+    p.add_argument("--exp", type=str, default="mlp_dqn_weekend_test")
     p.add_argument("--outdir", type=str, default="runs")
     p.add_argument("--models-dir", type=str, default="models")
     p.add_argument("--seed", type=int, default=42)
