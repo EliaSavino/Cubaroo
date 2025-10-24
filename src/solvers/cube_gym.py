@@ -9,103 +9,156 @@ Descr: Cube Gym for solvers, translates cube state to tensors and actions to cub
 '''
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Tuple, Dict
-import numpy as np, random
+from typing import Tuple, Dict, Any
+import numpy as np
 from src.cube import Cube  # your class
+from src.solvers.encoders import CubieEncoder
 
 MOVES = [f + s for f in "UDLRFB" for s in ["", "'"]]
 
-def apply_move(cube, move: str):
+
+def apply_move(cube: Cube, move: str) -> None:
+    """
+    Apply a face rotation to the cube in place.
+
+    Parameters
+    ----------
+    cube : Cube
+        The cube instance to mutate.
+    move : str
+        String code for the move. Must start with a face letter in {"U","D","L","R","F","B"}
+        and may optionally end with an apostrophe (e.g. "R'") for counter-clockwise rotation.
+    """
     face = move[0]
-    if move.endswith("'"):
-        cube.rotate(face, False)
-    else:
-        cube.rotate(face, True)
-
-class IndexCubieEncoder:
-    """
-    Encodes the cube as a vector of integer indices:
-      [corner_perm(8), corner_ori(8), edge_perm(12), edge_ori(12)]
-    Shape: (8 + 8 + 12 + 12,) = (40,)
-    Each element is an integer index that can be used for learned embeddings.
-    """
-    dim = 40
-
-    def encode(self, cube) -> np.ndarray:
-        corners_perm = [c.piece_idx for c in cube.corners]
-        corners_ori  = [c.ori for c in cube.corners]
-        edges_perm   = [e.piece_idx for e in cube.edges]
-        edges_ori    = [e.ori for e in cube.edges]
-        return np.array(corners_perm + corners_ori + edges_perm + edges_ori, dtype=np.int64)
-
-
-class FlatCubieEncoder:
-    """
-    Flattens permutation and orientation directly as floats (no one-hot).
-    Essentially the same as IndexCubieEncoder but float32 and single vector.
-    """
-    dim = 40
-
-    def encode(self, cube) -> np.ndarray:
-        vals = []
-        for c in cube.corners:
-            vals += [c.piece_idx, c.ori]
-        for e in cube.edges:
-            vals += [e.piece_idx, e.ori]
-        return np.array(vals, dtype=np.float32)
-
-class CubieEncoder:
-    """Pure cubie encoder → float vector (dim=256)."""
-    dim = 256
-    def encode(self, cube) -> np.ndarray:
-        vec=[]
-        for c in cube.corners:
-            one_perm=np.zeros(8); one_perm[c.piece_idx]=1
-            one_ori =np.zeros(3); one_ori[c.ori]=1
-            vec+=[one_perm,one_ori]
-        for e in cube.edges:
-            one_perm=np.zeros(12); one_perm[e.piece_idx]=1
-            one_ori =np.zeros(2);  one_ori[e.ori]=1
-            vec+=[one_perm,one_ori]
-        return np.concatenate(vec).astype(np.float32)
-
+    clockwise = not move.endswith("'")
+    cube.rotate(face, clockwise)
 
 
 @dataclass
 class CubeGymCubie:
     """
-    Minimal cube environment for RL:
-      - Uses Cube’s own history and score()
-      - No external step penalty
-      - Reward = Δ(score): positive if cube becomes more solved
+    Minimal Rubik’s Cube environment for reinforcement learning.
+
+    Implements the classic `(s, a, r, s')` interface:
+    - `reset()` returns an encoded observation.
+    - `step(action)` applies a cube move and returns the next observation,
+      reward, done flag, and info dict.
+
+    Reward design:
+        reward = α × Δ(score) − 0.0001
+        +5 bonus is added when the cube is fully solved.
+
+    The score function is assumed to increase as the cube approaches the solved state.
+
+    Parameters
+    ----------
+    encoder : CubieEncoder
+        Encoder converting a Cube instance into a numerical observation.
+    alpha : float, default=1.0
+        Scale factor for reward magnitude.
+    max_steps : int, default=100
+        Maximum number of moves before the episode terminates.
+
+    Attributes
+    ----------
+    cube : Cube
+        Internal cube instance.
+    prev_score : float
+        Previous cube score (for delta-based rewards).
+
+    Notes
+    -----
+    - `Cube` must expose:
+        • `.rotate(face: str, clockwise: bool)`
+        • `.scramble(length: int)`
+        • `.score() -> float`
+        • `.is_solved() -> bool`
+        • `.get_history() -> pandas.DataFrame`
+    - The environment does **not** internally seed random scrambles; reproducibility
+      should be handled by the caller.
+
+    Examples
+    --------
+    >>> env = CubeGymCubie(encoder=CubieEncoder())
+    >>> obs = env.reset(scramble_len=3)
+    >>> obs.shape
+    (256,)
+    >>> obs, reward, done, info = env.step(0)
+    >>> info["move"]
+    'U'
     """
+
     encoder: CubieEncoder
-    alpha: float = 1.0  # scale of reward (tune if learning unstable)
+    alpha: float = 1.0
     max_steps: int = 100
 
-    def reset(self, scramble_len: int = 0):
+    def reset(self, scramble_len: int = 0) -> np.ndarray:
+        """
+        Reset the environment and return the initial encoded state.
+
+        Parameters
+        ----------
+        scramble_len : int, default=0
+            Number of random moves to scramble the cube before starting.
+
+        Returns
+        -------
+        np.ndarray
+            Encoded observation representing the scrambled cube.
+        """
         self.cube = Cube()
         self.cube.scramble(length=scramble_len)
-        # let cube store its own move history internally
         self.prev_score = self.cube.score()
         return self.encoder.encode(self.cube)
 
-    def step(self, action_idx: int) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action_idx: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+        """
+        Apply a cube move and return the next state, reward, done flag, and info.
+
+        Parameters
+        ----------
+        action_idx : int
+            Index of the move to apply (0–11). Uses ``MOVES`` ordering:
+            ["U", "U'", "D", "D'", "L", "L'", "R", "R'", "F", "F'", "B", "B'"].
+
+        Returns
+        -------
+        observation : np.ndarray
+            Encoded cube state after the move.
+        reward : float
+            Change in cube score (scaled by ``alpha``) minus a small step penalty.
+        done : bool
+            True if the cube is solved or max_steps exceeded.
+        info : dict
+            Extra diagnostics: ``{"move", "score", "history_len"}``.
+
+        Notes
+        -----
+        - Adds a +5 bonus when the cube is solved.
+        - Uses the cube's internal history to determine episode length.
+        """
         move = MOVES[action_idx]
         apply_move(self.cube, move)
 
         score = self.cube.score()
-        reward = self.alpha * (score - self.prev_score) - 0.0001 # small step penalty to encourage faster solves
+        delta = score - self.prev_score
+        reward = self.alpha * delta - 0.0001  # small penalty encourages faster solving
         self.prev_score = score
 
         solved = self.cube.is_solved()
         if solved:
-            score+= 5# bonus for solving
-        # history:
-        history = self.cube.get_history()
-        history = history[history['phase'] == 'solve']
-        done = solved or (len(history)>= self.max_steps)
+            score += 5  # terminal bonus for solving
 
+        # track only the 'solve' phase of cube history
+        history = self.cube.get_history()
+        history = history[history["phase"] == "solve"]
+
+        done = solved or (len(history) >= self.max_steps)
         obs = self.encoder.encode(self.cube)
-        info = {"move": move, "score": score, "history_len": len(history)}
+
+        info: Dict[str, Any] = {
+            "move": move,
+            "score": score,
+            "history_len": len(history),
+        }
         return obs, reward, done, info

@@ -16,7 +16,8 @@ import torch
 
 # project imports
 from src.solvers.manager import DQNTrainer, DQNConfig
-from src.solvers.cube_gym import CubeGymCubie, CubieEncoder  # one-hot encoder
+from src.solvers.cube_gym import CubeGymCubie  # one-hot encoder
+from src.solvers.encoders import CubieEncoder
 from src.models.mlpq_net import MLPQNet  # or DuelingMLPQNet if you added it
 
 def set_seed(seed: int):

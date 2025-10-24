@@ -10,7 +10,8 @@ Descr:
 
 import unittest
 import numpy as np
-from src.solvers.cube_gym import CubeGymCubie, CubieEncoder, IndexCubieEncoder, FlatCubieEncoder, apply_move, MOVES
+from src.solvers.cube_gym import CubeGymCubie, apply_move, MOVES
+from src.solvers.encoders import IndexCubieEncoder, FlatCubieEncoder, CubieEncoder
 from src.cube import Cube
 
 class TestCubeGym(unittest.TestCase):

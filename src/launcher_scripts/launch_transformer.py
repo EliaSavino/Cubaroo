@@ -16,7 +16,8 @@ import torch
 
 # project imports
 from src.solvers.manager import DQNTrainer, DQNConfig
-from src.solvers.cube_gym import CubeGymCubie, IndexCubieEncoder  # index encoder for Transformer
+from src.solvers.cube_gym import CubeGymCubie  # index encoder for Transformer
+from src.solvers.encoders import IndexCubieEncoder
 from src.models.tiny_transformer import TransformerQNet
 
 def set_seed(seed: int):

@@ -11,129 +11,17 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from typing import Optional, Tuple, Callable
-import os, time, math, random, csv
+from typing import Optional, Tuple
+import os, time, csv
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from src.models.base_model import EpsGreedyPolicy, TorchQAdapter
-
-
-# ----- Minimal replay buffer --------------------------------------------------
-
-class Replay:
-    """
-    Experience replay buffer for off-policy RL agents.
-
-    Stores transitions of the form (state, action, reward, next_state, done)
-    up to a fixed capacity and allows random minibatch sampling for training.
-
-    By default, transitions are sampled uniformly. Optional modes:
-      - drop_after_sample=True: remove sampled transitions (each used once).
-      - prioritized=True: sample according to TD-error priorities (PER-lite).
-
-    Args:
-        cap (int): Maximum number of transitions to store.
-        prioritized (bool): If True, use TD-error-based prioritized replay.
-        alpha (float): How strongly to prioritize high-error samples (0=uniform, 1=full).
-        drop_after_sample (bool): If True, sampled items are deleted from buffer.
-    """
+from src.solvers.replay import Replay
+from src.models.actor import build_actor
+from src.solvers.solver_utilities import polyak_update, linear_epsilon, to_device, infer_obs_dtype
 
 
-    def __init__(self, cap: int = 300_000, prioritized: bool = False, alpha: float = 0.6, drop_after_sample: bool = False):
-        self.cap = cap
-        self.buf: List[Tuple[np.ndarray, int, float, np.ndarray, float]] = []
-        self.pos = 0
-        self.prioritized = prioritized
-        self.alpha = alpha
-        self.drop_after_sample = drop_after_sample  # keep False for PER
-        self.priorities = np.zeros((cap,), dtype=np.float32)
-        self.eps = 1e-6  # min priority to avoid zeros/NaNs
-
-    def push(self, s, a: int, r: float, ns, d: float, td_error: float | None = None):
-        item = (s, a, r, ns, d)
-        if len(self.buf) < self.cap:
-            self.buf.append(item)
-        else:
-            self.buf[self.pos] = item
-
-        if self.prioritized:
-            if td_error is None:
-                current_len = max(1, len(self.buf))
-                max_prio = self.priorities[:current_len].max()
-                if not np.isfinite(max_prio) or max_prio <= 0:
-                    max_prio = 1.0
-                self.priorities[self.pos] = max_prio
-            else:
-                p = abs(float(td_error))
-                if not np.isfinite(p) or p <= 0:
-                    p = 1.0
-                self.priorities[self.pos] = p
-
-        self.pos = (self.pos + 1) % self.cap
-
-    def sample(self, batch: int):
-        n = len(self.buf)
-        assert n > 0, "Cannot sample from empty buffer"
-
-        if self.prioritized:
-            raw = self.priorities[:n]
-            raw = np.where(np.isfinite(raw) & (raw > 0), raw, self.eps)
-            ps = np.power(raw, self.alpha)
-            Z = ps.sum()
-            if not np.isfinite(Z) or Z <= 0:
-                probs = np.full(n, 1.0 / n, dtype=np.float32)
-            else:
-                probs = ps / Z
-            idx = np.random.choice(n, size=batch, p=probs)
-            weights = (n * probs[idx]) ** (-1)
-            weights /= weights.max()
-        else:
-            idx = np.random.randint(0, n, size=batch)
-            weights = np.ones(batch, dtype=np.float32)
-
-        s, a, r, ns, d = zip(*[self.buf[i] for i in idx])
-        out = (np.stack(s),
-               np.array(a),
-               np.array(r, dtype=np.float32),
-               np.stack(ns),
-               np.array(d, dtype=np.float32),
-               idx,
-               weights.astype(np.float32))
-
-        if self.drop_after_sample:
-            self._delete_indices(idx)
-
-        return out
-
-    def update_priorities(self, idx, td_errors):
-        if not self.prioritized:
-            return
-        td = np.abs(np.asarray(td_errors, dtype=np.float32))
-        td[~np.isfinite(td)] = 1.0
-        td = np.maximum(td, self.eps)
-        n = len(self.buf)
-        idx = np.asarray(idx)
-        valid = (idx >= 0) & (idx < n)
-        self.priorities[idx[valid]] = td[valid]
-
-    def _delete_indices(self, idx):
-        idx = sorted(set(int(i) for i in idx), reverse=True)
-        for i in idx:
-            if i < len(self.buf):
-                self.buf.pop(i)
-                # keep priorities length aligned (simple but O(n))
-                self.priorities = np.delete(self.priorities, i)
-
-    def __len__(self): return len(self.buf)
-
-# ----- Config ----------------------------------------------------------------
-def polyak_update(target: nn.Module, online: nn.Module, tau: float = 0.005):
-    with torch.no_grad():
-        for tp, p in zip(target.parameters(), online.parameters()):
-            tp.data.mul_(1 - tau).add_(tau * p.data)
 
 @dataclass
 class DQNConfig:
@@ -197,33 +85,78 @@ class DQNConfig:
     save_path: str = "cube_dqn.pt"
     # File path to save final model weights (best checkpoints optional).
     experiment_name: str = "cube_dqn"
+    # Name for this experiment (used for output directory).
     output_dir: str = "runs"
-
-# ----- Utilities --------------------------------------------------------------
-
-def linear_epsilon(step: int, cfg: DQNConfig) -> float:
-    t = min(1.0, step / cfg.eps_decay_steps)
-    return cfg.eps_start + (cfg.eps_end - cfg.eps_start) * t
-
-def to_device(x: np.ndarray, device, dtype):
-    t = torch.from_numpy(x)
-    if dtype is torch.long: t = t.long()
-    else: t = t.float()
-    return t.to(device)
-
-# Determine obs dtype from a single observation (float one-hot vs int index)
-def infer_obs_dtype(obs: np.ndarray):
-    return torch.long if np.issubdtype(obs.dtype, np.integer) else torch.float32
-
-# ----- Trainer ----------------------------------------------------------------
+    # Root directory to save experiment runs/logs.
+    action_space = 12  # fixed for Rubik's Cube
 
 class DQNTrainer:
     """
-    Generic DQN trainer for CubeGymCubie.
-    Works with:
-      - One-hot encoder (obs: float[256]) + MLPQNet
-      - Index encoder (obs: int[40]) + TransformerQNet
-    The model must implement forward(x)->Q and .act(x, epsilon, action_mask=None).
+    Generic DQN trainer for **CubeGymCubie**.
+
+    Works with two observation encodings:
+      1) One-hot encoder → `obs: float[256]` with an MLP-style Q-network.
+      2) Index encoder   → `obs: int[40]`   with a Transformer-style Q-network.
+
+    The provided `model` must implement:
+      - `forward(x) -> Q` returning Q-values of shape `[B, n_actions]`
+      - (optionally) an `.act(x, epsilon, action_mask=None)` method; however the
+        trainer constructs a dedicated `actor` via `build_actor(...)` and uses that.
+
+    Parameters
+    ----------
+    env : CubeEnv
+        Environment exposing `reset(scramble_len)` and `step(a)` that returns
+        `(next_obs, reward, done, info)`.
+    model : nn.Module
+        Q-network mapping observations to action-values.
+    cfg : DQNConfig
+        Configuration object (see `DQNConfig` Protocol for required fields).
+
+    Attributes
+    ----------
+    env : CubeEnv
+    model : nn.Module
+    cfg : DQNConfig
+    device : torch.device
+        `"mps"` if available on Apple Silicon, else `"cpu"`. (Extend as needed.)
+    target : nn.Module
+        Frozen target network (Polyak-updated by default).
+    actor : Actor
+        Epsilon-greedy actor built from `model`.
+    optim : torch.optim.Optimizer
+        Adam optimizer over model parameters.
+    replay : Replay
+        Prioritized replay buffer (PER-lite) used for training batches.
+    exp_dir : str
+        Output directory for this run (`<cfg.output_dir>/<cfg.experiment_name>`).
+    final_path, best_path, last_path : str
+        Checkpoint file paths.
+    log_path : str
+        CSV training log path under `exp_dir`.
+    obs_dtype : Optional[torch.dtype]
+        Inferred observation dtype (`torch.long` or `torch.float32`) from first obs.
+    last_loss : float
+        Last computed training loss (scalar).
+    _best_sr : float
+        Best solve rate observed during periodic evaluations.
+    _td_mean, _td_max : float
+        TD error statistics for logging.
+
+    Notes
+    -----
+    - Target network is maintained via **Polyak averaging** (τ=0.005). You can
+      switch to periodic hard copies by enabling the commented block in `train`.
+    - The trainer logs a CSV with compact stats and prints periodic summaries.
+    - Curriculum learning: when success rate (SR) ≥ `cfg.curriculum_success` and
+      `current_scramble < cfg.curriculum_max_scramble`, the scramble length is
+      bumped after a few locked evaluation windows.
+
+    Examples
+    --------
+    >>> trainer = DQNTrainer(env, model, cfg)
+    >>> trainer.train(start_scramble=4)
+    >>> sr, avg_len = trainer.evaluate(episodes=100, scramble_len=6)
     """
     def __init__(self, env, model: nn.Module, cfg: DQNConfig):
         self.env = env
@@ -241,7 +174,15 @@ class DQNTrainer:
             self.model.compile()
         except Exception:
             print("  ! Model compilation failed; continuing without it.")
-
+        
+        self.actor = build_actor(
+            model=self.model,
+            device=self.device,
+            n_actions=self.cfg.action_space,
+            prefer_model_act=True,
+        )
+        
+        
         self.optim = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
         self.replay = Replay(cap=100_000, prioritized=True, alpha=0.6, drop_after_sample=False)
 
@@ -288,6 +229,21 @@ class DQNTrainer:
         self._td_max = 0.0
 
     def _save_ckpt(self, tag: str, step: Optional[int] = None):
+        """
+        Save a model checkpoint.
+
+        Parameters
+        ----------
+        tag : str
+            One of {"best", "last"} or a custom tag. For custom tags, a file
+            name is created as `"{tag}.pt"` or `"{tag}_{step}.pt"` if `step` is provided.
+        step : int, optional
+            Optional step index to append to filename for custom tags.
+
+        Returns
+        -------
+        None
+        """
         if tag == "best":
             path = self.best_path
         elif tag == "last":
@@ -301,6 +257,27 @@ class DQNTrainer:
     # simple one-episode eval (greedy)
     @torch.no_grad()
     def evaluate(self, episodes: int = 70, scramble_len: Optional[int] = None) -> Tuple[float, float]:
+        """
+        Run greedy evaluations (ε=0) and report solve rate and average length.
+
+        Parameters
+        ----------
+        episodes : int, default=70
+            Number of evaluation episodes.
+        scramble_len : int or None, optional
+            Scramble length to pass to `env.reset`. If None, uses 0.
+
+        Returns
+        -------
+        (solve_rate, avg_length) : tuple[float, float]
+            Solve rate in [0, 1] and average number of steps (over all episodes).
+
+        Notes
+        -----
+        - A run is counted as solved when the environment signals `done` and
+          `info.get("score", 0.0) > 1.0` (matching your environment’s convention).
+        - Each episode is capped at 200 steps.
+        """
         solved = 0
         avg_len = 0.0
         for _ in range(episodes):
@@ -310,7 +287,7 @@ class DQNTrainer:
             steps = 0
             for _ in range(200):
                 x = to_device(obs[None, ...], self.device, self.obs_dtype)
-                a = self.model.act(x, epsilon=0.0).item()
+                a = self.actor.act(x, epsilon=0.0).item()
                 obs, r, done, info = self.env.step(a)
                 steps += 1
                 if done and info.get("score", 0.0) > 1.0:
@@ -321,6 +298,28 @@ class DQNTrainer:
 
     # --- Training loop ---
     def train(self, start_scramble: int = 4):
+        """
+        Train the DQN agent with prioritized replay and Double-DQN targets.
+
+        The loop performs:
+        1) Environment interaction (ε-greedy with linear schedule).
+        2) Replay storage (`Replay.push`).
+        3) Mini-batch updates every `cfg.train_every` steps (after warmup).
+           - Importance-weighted Huber loss using PER weights.
+           - Double-DQN target: online argmax, target value.
+        4) Target soft updates (Polyak).
+        5) Periodic evaluation & CSV logging.
+        6) Simple curriculum increases in scramble length.
+
+        Parameters
+        ----------
+        start_scramble : int, default=4
+            Initial scramble length used for `env.reset`.
+
+        Returns
+        -------
+        None
+        """
         obs = self.env.reset(scramble_len=start_scramble)
         self.obs_dtype = infer_obs_dtype(obs)
 
@@ -347,7 +346,7 @@ class DQNTrainer:
         while step < self.cfg.total_steps:
             eps = linear_epsilon(step, self.cfg)
             x = to_device(obs[None, ...], self.device, self.obs_dtype)
-            a = self.model.act(x, epsilon=eps).item()
+            a = self.actor.act(x, epsilon=eps).item()
 
             # Interact
             nobs, r, done, info = self.env.step(a)
@@ -466,15 +465,15 @@ class DQNTrainer:
 
 # ----- Example usage ----------------------------------------------------------
 if __name__ == "__main__":
-    from src.solvers.cube_gym import CubeGymCubie, CubieEncoder, IndexCubieEncoder, FlatCubieEncoder
+    from src.solvers.cube_gym import CubeGymCubie
+    from src.solvers.encoders import CubieEncoder
     from src.models.mlpq_net import MLPQNet
-    from src.models.tiny_transformer import TransformerQNet
-
 
     # One-hot + MLP
     env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
     model = MLPQNet(in_dim=256, hidden=512)          # baseline
-    cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp.pt")
+    cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp_actor.pt",
+                    experiment_name="cube_dqn_mlp_testing", output_dir="runs")
     DQNTrainer(env, model, cfg).train(start_scramble=4)
 
     # # Index + Transformer
