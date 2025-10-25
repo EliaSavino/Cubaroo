@@ -11,6 +11,8 @@ Descr:
 from __future__ import annotations
 from typing import Optional, Any, Protocol, runtime_checkable
 import numpy as np
+import torch
+
 from src.models.adaptors import QValueProvider
 
 @runtime_checkable
@@ -85,7 +87,7 @@ class EpsGreedyPolicy(BasePolicy):
     def __init__(self, model: QValueProvider, rng: Optional[np.random.Generator] = None) -> None:
         self.model = model
         self.rng = rng or np.random.default_rng()
-
+    @torch.no_grad()
     def act(
         self,
         X: Any,
@@ -118,72 +120,43 @@ class EpsGreedyPolicy(BasePolicy):
             If the mask shape does not match the returned Q-values shape.
         """
         # Get Q-values
-        q = self.model.q_values(X)  # [B, A]
-        if q.ndim != 2:
-            raise ValueError(f"q_values must return a 2D array [B, A], got shape {q.shape}")
+        device = next(self.model.module.parameters()).device  # type: ignore[attr-defined]
+        q = self.model.q_values(X)  # [B, A] on device
         B, A = q.shape
-        if A != self.model.n_actions:
-            raise ValueError(
-                f"q_values second dimension must equal model.n_actions={self.model.n_actions}, got {A}"
-            )
 
-        # Clip epsilon to sane bounds
-        eps = float(np.clip(epsilon, 0.0, 1.0))
-
-        # Normalize mask → boolean "allowed" mask
-        if action_mask is None:
-            allowed = np.ones_like(q, dtype=bool)
-            add_mask = None
-        else:
+        # normalize mask to additive form
+        if action_mask is not None:
             if action_mask.shape != (B, A):
-                raise ValueError(
-                    f"action_mask must have shape [B, A] = {(B, A)}, got {action_mask.shape}"
-                )
-            if action_mask.dtype == bool:
-                allowed = action_mask
-                add_mask = None
+                raise ValueError(f"action_mask must be [B, A]=({B}, {A}), got {tuple(action_mask.shape)}")
+            if action_mask.dtype == torch.bool:
+                q = q.masked_fill(~action_mask, float("-inf"))
             else:
-                # Finite entries are allowed; non-finite (e.g., -inf) disallowed.
-                allowed = np.isfinite(action_mask)
-                add_mask = action_mask  # to be added during exploitation
+                q = q + action_mask  # expected 0 or -inf (or very negative)
+        # greedy
+        greedy = q.argmax(dim=-1)  # [B]
 
-        # Decide which rows explore
-        explore_flags = self.rng.random(B) < eps
-        actions = np.empty(B, dtype=np.int64)
+        # exploration flags
+        eps = float(max(0.0, min(1.0, epsilon)))
+        if eps <= 0.0:
+            return greedy
 
-        # Exploration: row-wise uniform over allowed; if none allowed → uniform over all actions
-        if explore_flags.any():
-            allowed_rows = allowed[explore_flags]
-            has_any = allowed_rows.any(axis=1, keepdims=True)
-            # If a row has no allowed actions, allow all as a fallback
-            safe_allowed = np.where(has_any, allowed_rows, True)
+        explore_flags = (torch.rand(B, device=device) < eps)  # [B] bool
+        if not explore_flags.any():
+            return greedy
 
-            # Convert to per-row categorical distributions
-            probs = safe_allowed.astype(float)
-            probs /= probs.sum(axis=1, keepdims=True)
+        # sample random valid actions uniformly
+        if action_mask is None:
+            rand_act = torch.randint(A, (B,), device=device)
+        else:
+            # valid actions per row
+            valid = (action_mask.isfinite() if action_mask.dtype.is_floating_point else action_mask).to(q.dtype)
+            # fallback: if a row has no valid actions, allow all
+            row_sums = valid.sum(dim=1, keepdim=True)
+            safe_valid = torch.where(row_sums > 0, valid, torch.ones_like(valid))
+            probs = safe_valid / safe_valid.sum(dim=1, keepdim=True)
+            rand_act = torch.multinomial(probs, 1).squeeze(1)
 
-            # Sample: inverse-CDF per row
-            cum = probs.cumsum(axis=1)
-            r = self.rng.random(size=(probs.shape[0], 1))
-            sampled = (cum < r).sum(axis=1)
-            actions[explore_flags] = sampled
-
-        # Exploitation: argmax respecting mask
-        if (~explore_flags).any():
-            q_greedy = q[~explore_flags].copy()
-
-            if add_mask is not None:
-                # Add additive mask directly (e.g., 0 or -inf)
-                q_greedy += add_mask[~explore_flags]
-            else:
-                # Convert boolean allowed mask → -inf for disallowed
-                disallowed = ~allowed[~explore_flags]
-                # Avoid modifying in-place where all actions are disallowed; in that
-                # pathological case, argmax will pick 0 (consistent fallback).
-                q_greedy[disallowed] = -np.inf
-
-            actions[~explore_flags] = np.argmax(q_greedy, axis=1)
-
-        return actions
+        actions = torch.where(explore_flags, rand_act, greedy)
+        return actions.long()
 
 

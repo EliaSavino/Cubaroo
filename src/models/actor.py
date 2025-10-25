@@ -92,7 +92,12 @@ class ModelActor:
             mask_np = action_mask.detach().to("cpu").numpy()
 
         a_np = self.policy.act(x, epsilon=epsilon, action_mask=mask_np)  # (B,), int64 expected
-        return torch.from_numpy(a_np).to(self.device).long()
+        if isinstance(a_np, np.ndarray):
+            return torch.from_numpy(a_np).to(self.device).long()
+        elif isinstance(a_np, torch.Tensor):
+            return a_np.to(self.device).long()
+        else:
+            raise TypeError(f"Unexpected action type: {type(a_np)}")
 
 
 def build_actor(

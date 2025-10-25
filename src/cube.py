@@ -619,9 +619,9 @@ class Cube:
         :return:
         """
         for i, c in enumerate(self.corners):
-            if c.slot_name != CORNER_SLOTS[i] or (c.ori % 3) != 0:
+            if c.piece_idx != i or (c.ori % 3) != 0:
                 return False
         for i, e in enumerate(self.edges):
-            if e.slot_name != EDGE_SLOTS[i] or (e.ori % 2) != 0:
+            if e.piece_idx != i or (e.ori % 2) != 0:
                 return False
         return True

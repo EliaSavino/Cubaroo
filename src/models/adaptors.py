@@ -113,41 +113,28 @@ class TorchQAdapter(QValueProvider):
         np.ndarray
             Q-values of shape ``[B, n_actions]`` (float).
         """
-        torch = self._torch
-
-        # Prepare input tensor
+        torch_ = self._torch
         if self.pre is not None:
             tX = self.pre(X)
         else:
-            tX = X if isinstance(X, torch.Tensor) else torch.as_tensor(X)
-
-        # Move to device if requested
+            tX = X if isinstance(X, torch_.Tensor) else torch_.as_tensor(X)
         if self.device is not None:
             tX = tX.to(self.device)
-            # safe to call .to() repeatedly; is a no-op if already on device
-            self.module = self.module.to(self.device)  # type: ignore[assignment]
-
-        # Forward pass
         if self.no_grad:
-            with torch.no_grad():
+            with torch_.no_grad():
                 q = self.module(tX)  # type: ignore[misc]
         else:
-            q = self.module(tX)  # type: ignore[misc]
+            q = self.module(tX)      # type: ignore[misc]
 
-        # Convert to numpy
-        out = q.detach().to("cpu").numpy().astype(float, copy=False)
-
-        # Optional post-processing
         if self.post is not None:
-            out = self.post(out)
+            q = self.post(q)
 
-        # Minimal shape check (avoid heavy refactors)
-        if out.ndim != 2 or out.shape[1] != self.n_actions:
+        # Shape check on tensor
+        if q.dim() != 2 or q.size(1) != self.n_actions:
             raise ValueError(
-                f"TorchQAdapter expected output shape [B, {self.n_actions}], "
-                f"got {tuple(out.shape)}"
+                f"TorchQAdapter expected output shape [B, {self.n_actions}], got {tuple(q.shape)}"
             )
-        return out
+        return q
 
 
 class SklearnQAdapter(QValueProvider):
