@@ -23,15 +23,16 @@ from src.cubies import (
     CORNER_PIECE_COLORS,
     EDGE_PIECE_COLORS,
 )
+from src.visualisation.utils_visualization import _cubie_faces, _color_lookup, _unit_cubie_quads
 
 # Move tables (on *slot indices*, not on piece ids)
 CORN_PERM = {
-    "U": [1, 2, 3, 0, 4, 5, 6, 7],
+    "U": [3, 0, 1, 2, 4, 5, 6, 7],
     "D": [0, 1, 2, 3, 5, 6, 7, 4],
     "R": [4, 1, 2, 0, 7, 5, 6, 3],
-    "L": [0, 5, 1, 3, 4, 6, 2, 7],
+    "L": [0, 2, 6, 3, 4, 1, 5, 7],
     "F": [1, 5, 2, 3, 0, 4, 6, 7],
-    "B": [0, 1, 6, 2, 4, 5, 7, 3],
+    "B": [0, 1, 3, 7, 4, 5, 2, 6],
 }
 CORN_ORI = {
     "U": [0] * 8,
@@ -42,13 +43,13 @@ CORN_ORI = {
     "B": [0, 0, 1, 2, 0, 0, 2, 1],
 }
 EDGE_PERM = {
-    "U": [1, 2, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11],
+    "U": [3, 0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
     "D": [0, 1, 2, 3, 5, 6, 7, 4, 8, 9, 10, 11],
     "R": [8, 1, 2, 3, 11, 5, 6, 7, 4, 9, 10, 0],
-    "L": [0, 1, 9, 3, 4, 5, 10, 7, 8, 6, 2, 11],
+    "L": [0, 1, 10, 3, 4, 5, 9, 7, 8, 2, 6, 11],
     "F": [0, 9, 2, 3, 4, 8, 6, 7, 1, 5, 10, 11],
     # 'B':[0,1,2,10,4,5,6,11,8,9,3,7],
-    "B": [0, 1, 2, 10, 4, 5, 6, 11, 8, 9, 7, 3],
+    "B": [0, 1, 2, 11, 4, 5, 6, 10, 8, 9, 3, 7],
 }
 EDGE_ORI = {
     "U": [0] * 12,
@@ -365,10 +366,10 @@ class Cube:
         """
         ok = 0
         for i, c in enumerate(self.corners):
-            if c.slot_name == CORNER_SLOTS[i] and (c.ori % 3) == 0:
+            if c.piece_idx == i and (c.ori % 3) == 0:
                 ok += 1
         for i, e in enumerate(self.edges):
-            if e.slot_name == EDGE_SLOTS[i] and (e.ori % 2) == 0:
+            if e.piece_idx == i and (e.ori % 2) == 0:
                 ok += 1
         return ok / 20.0
 
@@ -556,6 +557,79 @@ class Cube:
         ax.set_zlim(-1.5, 1.5)
         if fig is not None:
             plt.show()
+
+    def plot_3d_cubies(
+            self,
+            ax: plt.Axes | None = None,
+            figsize: tuple[int, int] = (6, 6),
+            edgecolor: str = "k",
+            pose_override: dict[int, tuple[np.ndarray, np.ndarray]] | None = None,
+            cubie_size: float = 0.94,
+    ) -> None:
+        """
+        Render as 27 cubies with stickers.
+        Colors come from F = to_facelets() (6×3×3) — already correct in your code.
+        `pose_override` lets the animator rotate/translate specific cubies per frame:
+          pose_override[cubie_idx] = (R(3×3), t(3,))
+        Cubie indexing used here: idx = (ix+1)*9 + (iy+1)*3 + (iz+1), for ix,iy,iz in {-1,0,1}.
+        """
+        F = self.to_facelets()
+
+        fig = None
+        if ax is None:
+            fig = plt.figure(figsize=figsize)
+            ax = fig.add_subplot(111, projection="3d")
+        ax.set_box_aspect([1, 1, 1])
+
+        # Precompute local quads at origin
+        local_quads = _unit_cubie_quads(size=cubie_size)
+
+        coords = [-1.0, 0.0, 1.0]
+
+        def cubie_index(ix: int, iy: int, iz: int) -> int:
+            return (ix + 1) * 9 + (iy + 1) * 3 + (iz + 1)
+
+        for ix, x in enumerate(coords, start=-1):
+            for iy, y in enumerate(coords, start=-1):
+                for iz, z in enumerate(coords, start=-1):
+                    idx = cubie_index(ix, iy, iz)
+
+                    # Default pose: identity rotation, translated to grid center
+                    R = np.eye(3)
+                    t = np.array([x, y, z], dtype=float)
+
+                    # Animator may override (for the rotating layer)
+                    if pose_override and idx in pose_override:
+                        R, t = pose_override[idx]
+
+                    # Which of the 6 faces are exposed at the hull?
+                    visible = []
+                    if np.isclose(z, 1.0): visible.append('U')
+                    if np.isclose(z, -1.0): visible.append('D')
+                    if np.isclose(y, 1.0): visible.append('F')
+                    if np.isclose(y, -1.0): visible.append('B')
+                    if np.isclose(x, 1.0): visible.append('R')
+                    if np.isclose(x, -1.0): visible.append('L')
+
+                    # Transform and draw visible faces
+                    for face_name in visible:
+                        quad_local = local_quads[face_name]  # (4,3) at origin
+                        quad_world = (R @ quad_local.T).T + t  # (4,3)
+                        color_idx = _color_lookup(F, face_name, x, y, z)
+                        col = self._COLORS[color_idx]
+
+                        poly = Poly3DCollection([quad_world], linewidths=0.5)
+                        poly.set_facecolor(col)
+                        poly.set_edgecolor(edgecolor)
+                        ax.add_collection3d(poly)
+
+        ax.set_axis_off()
+        ax.set_xlim(-1.6, 1.6)
+        ax.set_ylim(-1.6, 1.6)
+        ax.set_zlim(-1.6, 1.6)
+        if fig is not None:
+            plt.show()
+
 
     def print_net(self, use_color: bool = True) -> None:
         """
