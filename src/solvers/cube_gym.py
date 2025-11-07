@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Tuple, Dict, Any
 import numpy as np
 from src.cube import Cube  # your class
+from src.scorer import Scorer, ScoringOption
 from src.solvers.encoders import CubieEncoder
 
 MOVES = [f + s for f in "UDLRFB" for s in ["", "'"]]
@@ -91,6 +92,7 @@ class CubeGymCubie:
     encoder: CubieEncoder
     alpha: float = 1.0
     max_steps: int = 100
+    scorer: Scorer = Scorer(option=ScoringOption.PHASE1_NAIVE)
 
     def reset(self, scramble_len: int = 0) -> np.ndarray:
         """
@@ -108,7 +110,7 @@ class CubeGymCubie:
         """
         self.cube = Cube()
         self.cube.scramble(length=scramble_len)
-        self.prev_score = self.cube.score()
+        self.prev_score = self.scorer(self.cube)
         return self.encoder.encode(self.cube)
 
     def step(self, action_idx: int) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
@@ -140,14 +142,14 @@ class CubeGymCubie:
         move = MOVES[action_idx]
         apply_move(self.cube, move)
 
-        score = self.cube.score()
+        score = self.scorer(self.cube)
         delta = score - self.prev_score
-        reward = self.alpha * delta - 0.0001  # small penalty encourages faster solving
+        reward = self.alpha * delta - 0.0000  # small penalty encourages faster solving
         self.prev_score = score
 
         solved = self.cube.is_solved()
         if solved:
-            score += 5  # terminal bonus for solving
+            score += 0  # terminal bonus for solving
 
         # track only the 'solve' phase of cube history
         history = self.cube.get_history()

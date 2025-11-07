@@ -7,10 +7,13 @@ Happy Hacking!
 Descr:
 
 """
+import sys
 
 import numpy as np
 import pandas as pd
 from src.cube import Cube
+from src.scorer import Scorer, ScoringOption
+from tests.test_functions import make_f2l,make_first_layer,make_top_cross_permuted,make_top_cross_in_place,make_bottom_cross_in_place
 
 moves = [
     ("R", True),
@@ -28,10 +31,20 @@ moves = [
 ]
 
 c = Cube()
-c.scramble()
-c.print_net(use_color=True)
-print(c.score())
+scorers = {option: Scorer(option=option) for option in ScoringOption}
+functions = {"Solved":lambda: Cube(), "TopCross": make_top_cross_in_place, "TopCrossScramble": make_top_cross_permuted,
+             'F2L': make_f2l, "first_layer": make_first_layer, "bottom_cross": make_bottom_cross_in_place}
 
+
+
+# c.scramble()
+c.print_net(use_color=True)
+for name, func in functions.items():
+    print(name)
+    c = func()
+    print({option: s(c) for option, s in scorers.items()})
+
+sys.exit()
 while True:
     value = input("move:")
     if value == "q":
@@ -47,9 +60,9 @@ while True:
     print(f"lab: {lab}, rot: {rot}")
     c.rotate(lab, rot)
     c.print_net(use_color=True)
-    print(c.score())
+    print(scorer(c))
 
-print(f"Final score: {c.score()} ")
+print(f"Final score: {scorer(c)} ")
 c.plot_3d()
 # print(c.score())
 # for m in "RRLLUUDDFFBB":

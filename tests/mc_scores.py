@@ -13,12 +13,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
+from src.scorer import Scorer, ScoringOption
+
 
 def simulate_scramble_scores(
     trials: int = 3000,
     min_len: int = 0,
     max_len: int = 100,
     seed: int | None = None,
+    scorer: Scorer = Scorer(ScoringOption.PHASE1_NAIVE),
 ) -> pd.DataFrame:
     """
     Monte Carlo sanity check: sample random scramble lengths, scramble fresh cubes,
@@ -54,7 +57,7 @@ def simulate_scramble_scores(
             dict(
                 trial=t,
                 scramble_len=L,
-                score=float(c.score()),
+                score=float(scorer(c)),
                 solved_fraction=float(c.solved_fraction()),
             )
         )
@@ -128,7 +131,7 @@ def fit_decay(df: pd.DataFrame) -> tuple[float, float]:
     print(f"Fitted steady-state S_inf={S_inf:.3f}, decay constant k={k:.3f}")
     return S_inf, k
 
-def plot_decay_fit(df: pd.DataFrame) -> None:
+def plot_decay_fit(df: pd.DataFrame, title:str = "") -> None:
     """
     Plot median score with fitted exponential decay curve.
     """
@@ -145,14 +148,17 @@ def plot_decay_fit(df: pd.DataFrame) -> None:
     plt.plot(xfit, yfit, "r-", lw=2.5, label=f"fit: S_inf={S_inf:.3f}, k={k:.3f}")
     plt.xlabel("Scramble length (quarter-turns)")
     plt.ylabel("Score (≈ solved fraction)")
-    plt.title("Entropy Decay Fit: Score vs Scramble Length")
+    plt.title(f"Entropy Decay Fit: Score vs Scramble Length: {title}")
     plt.legend()
     plt.grid(alpha=0.3)
     plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
-    df_scores = simulate_scramble_scores(trials=300, min_len=0, max_len=100, seed=42)
-    print(summarize_scramble_score(df_scores))
-    plot_scramble_score(df_scores)
-    plot_decay_fit(df_scores)
+    for option in ScoringOption:
+        print(option)
+        scorer = Scorer(option=option)
+        df_scores = simulate_scramble_scores(trials=300, min_len=0, max_len=50, seed=42, scorer = scorer)
+        print(summarize_scramble_score(df_scores))
+        # plot_scramble_score(df_scores)
+        plot_decay_fit(df_scores, title = option)
