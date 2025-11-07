@@ -8,7 +8,7 @@ Descr: Cube Gym for solvers, translates cube state to tensors and actions to cub
 
 '''
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Tuple, Dict, Any
 import numpy as np
 from src.cube import Cube  # your class
@@ -92,7 +92,8 @@ class CubeGymCubie:
     encoder: CubieEncoder
     alpha: float = 1.0
     max_steps: int = 100
-    scorer: Scorer = Scorer(option=ScoringOption.PHASE1_NAIVE)
+    scorer: Scorer = field(default_factory=lambda: Scorer(option=ScoringOption.LENGTH_AWARE))
+    MCTS_planner = None
 
     def reset(self, scramble_len: int = 0) -> np.ndarray:
         """

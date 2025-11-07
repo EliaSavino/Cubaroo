@@ -42,6 +42,7 @@ c.print_net(use_color=True)
 for name, func in functions.items():
     print(name)
     c = func()
+    c.print_net(use_color=True)
     print({option: s(c) for option, s in scorers.items()})
 
 sys.exit()
