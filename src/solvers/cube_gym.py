@@ -17,6 +17,13 @@ from src.solvers.encoders import CubieEncoder
 
 MOVES = [f + s for f in "UDLRFB" for s in ["", "'"]]
 
+def inverse_action_idx(action_idx: int) -> int:
+    """
+    inverses the given action index
+    :param action_idx:
+    :return:
+    """
+    return action_idx ^ 1
 
 def apply_move(cube: Cube, move: str) -> None:
     """

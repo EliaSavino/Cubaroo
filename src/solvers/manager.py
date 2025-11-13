@@ -17,9 +17,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from src.scorer import ScoringOption, Scorer
 from src.solvers.replay import Replay
 from src.models.actor import build_actor
 from src.solvers.solver_utilities import polyak_update, linear_epsilon, to_device, infer_obs_dtype, _maybe_compile
+from src.solvers.tree_search_planner import MCTSPlanner
 
 
 
@@ -71,7 +74,7 @@ class DQNConfig:
     eps_end: float = 0.05
     # Final epsilon after decay. Lower → more greedy late training.
 
-    eps_decay_steps: int = 150000
+    eps_decay_steps: int = 80000
     # Number of steps over which epsilon linearly decays from eps_start to eps_end.
     # For quicker consolidation on easy scrambles, try 80k–120k.
 
@@ -89,6 +92,18 @@ class DQNConfig:
     output_dir: str = "runs"
     # Root directory to save experiment runs/logs.
     action_space = 12  # fixed for Rubik's Cube
+
+    use_mcts: bool = True   # whether to use MCTS planning during training
+    mcts_every: int = 1    # run MCTS every N steps
+    mcts_n_sim: int = 5   # how many carlos to monte
+    mcts_max_depth: int = 5 # lookahead depth for MCTS
+    mcts_cpuct: float = 1.5 # exploration constant for MCTS
+    mcts_use_model: bool = False  # whether to use Q-network for leaf eval in MCTS
+    mcts_use_priors: bool = False     # whether to use policy priors in MCTS
+    eval_use_mcts: bool = True  # whether to use MCTS during evaluation
+    lambda_mcts_value: float = 0.5  # weight for combining MCTS value with Q-value during eval
+    beta_mcts_policy: float = 1.0  # temperature for MCTS policy during eval
+    eps_mcts_gate: float = 1.0  # only use MCTS when epsilon <= this during training
 
 class DQNTrainer:
     """
@@ -230,6 +245,52 @@ class DQNTrainer:
         self._td_mean = 0.0
         self._td_max = 0.0
 
+        self._planner = None
+        if getattr(self.cfg, "use_mcts", False):
+            q_fn = self._q_fn_from_model if getattr(self.cfg, "mcts_use_model", True) else None
+            policy_prior = self._policy_prior_from_model if getattr(self.cfg, "mcts_use_priors", True) else None
+            self._planner = MCTSPlanner(
+                q_fn=q_fn,
+                policy_prior=policy_prior,
+                gamma=self.cfg.gamma,
+                cpuct=getattr(self.cfg, "mcts_cpuct", 1.5),
+                n_sim=getattr(self.cfg, "mcts_n_sim", 400),
+                max_depth=getattr(self.cfg, "mcts_max_depth", 5),
+            )
+            self._mcts_value: Optional[dict[int, float]] = {}  # cache for eval
+            self._mcts_policy: Optional[dict[int, np.ndarray]] = {}  # cache for eval
+
+    def _encode_cube(self):
+        # Single helper to get a model-ready tensor from the current cube.
+        obs = self.env.encoder.encode(self.env.cube)
+        if self.obs_dtype is None:
+            self.obs_dtype = infer_obs_dtype(obs)
+        return to_device(obs[None, ...], self.device, self.obs_dtype)
+
+    def _q_fn_from_model(self, cube) -> np.ndarray:
+        """
+        Leaf evaluator: returns Q(s,·) for the given cube using the current model.
+        Used by MCTS as V_leaf = max_a Q(s,a).
+        """
+        # Encode *that* cube, not env.cube
+        obs = self.env.encoder.encode(cube)
+        if self.obs_dtype is None:
+            self.obs_dtype = infer_obs_dtype(obs)
+        x = to_device(obs[None, ...], self.device, self.obs_dtype)  # [1, d]
+        with torch.no_grad():
+            q = self.model(x).squeeze(0).detach().cpu().numpy()     # [12]
+        return q
+
+    def _policy_prior_from_model(self, cube) -> np.ndarray:
+        """
+        Optional priors for PUCT: softmax over Q(s,·) from the current model.
+        """
+        q = self._q_fn_from_model(cube)
+        q = q - q.max()
+        p = np.exp(q)
+        s = p.sum()
+        return (p / s) if s > 0 else np.ones_like(p) / len(p)
+
     def _save_ckpt(self, tag: str, step: Optional[int] = None):
         """
         Save a model checkpoint.
@@ -282,15 +343,32 @@ class DQNTrainer:
         """
         solved = 0
         avg_len = 0.0
+        use_plan = (self._planner is not None and self.cfg.use_mcts and self.cfg.eval_use_mcts)
         for _ in range(episodes):
             obs = self.env.reset(scramble_len=scramble_len if scramble_len is not None else 0)
             if self.obs_dtype is None:
                 self.obs_dtype = infer_obs_dtype(obs)
             steps = 0
+            last_action_idx: Optional[int] = None  # per-episode
+
             for _ in range(200):
-                x = to_device(obs[None, ...], self.device, self.obs_dtype)
-                a = self.actor.act(x, epsilon=0.0).item()
+                # build mask
+                action_mask = None
+                if last_action_idx is not None:
+                    inv = inverse_action_idx(last_action_idx)
+                    mask = torch.ones(1, self.cfg.action_space, dtype=torch.bool, device=self.device)
+                    mask[0, inv] = False
+                    action_mask = mask
+
+                if use_plan:
+                    a = self._planner.choose_action(self.env,
+                                                    prev_action_idx=last_action_idx)
+                else:
+                    x = to_device(obs[None, ...], self.device, self.obs_dtype)
+                    a = self.actor.act(x, epsilon=0.0, action_mask=action_mask).item()
+
                 obs, r, done, info = self.env.step(a)
+                last_action_idx = a
                 steps += 1
                 if done and info.get("score", 0.0) > 1.0:
                     solved += 1
@@ -344,15 +422,41 @@ class DQNTrainer:
 
         print(f"Starting training on device={self.device} | steps={self.cfg.total_steps:,} | scramble={current_scramble}")
         print("-" * 90)
-
+        last_action_idx: Optional[int] = None
         while step < self.cfg.total_steps:
             eps = linear_epsilon(step, self.cfg)
             x = to_device(obs[None, ...], self.device, self.obs_dtype)
-            a = self.actor.act(x, epsilon=eps).item()
+            # Build mask that forbids the inverse of the last real action
+            action_mask = None
+            if last_action_idx is not None:
+                inv = inverse_action_idx(last_action_idx)
+                mask = torch.ones(1, self.cfg.action_space, dtype=torch.bool, device=self.device)
+                mask[0, inv] = False  # disallow inverse move only
+                action_mask = mask
+
+            use_planner_now = (
+                    self._planner is not None
+                    and self.cfg.use_mcts
+                    and (step % self.cfg.mcts_every == 0)
+                    and eps <= self.cfg.eps_mcts_gate
+            )
+
+            if use_planner_now:
+                # pass previous action into planning so tree also avoids immediate undo at root
+                a, q_mcts, pi_mcts = self._planner.plan_root(self.env,
+                                                             prev_action_idx=last_action_idx)
+            else:
+                a = self.actor.act(x, epsilon=eps, action_mask=action_mask).item()
+                q_mcts, pi_mcts = None, None
 
             # Interact
             nobs, r, done, info = self.env.step(a)
-            self.replay.push(obs, a, r, nobs, float(done))
+            last_action_idx = a
+            idx_push = self.replay.push(obs, a, r, nobs, float(done))
+            if q_mcts is not None and pi_mcts is not None:
+                self._mcts_value[idx_push] = float(q_mcts[a])
+                self._mcts_policy[idx_push] = pi_mcts
+
             obs = nobs
             ep_ret += r
             step += 1
@@ -362,6 +466,7 @@ class DQNTrainer:
                 ep_returns.append(ep_ret)
                 obs = self.env.reset(scramble_len=current_scramble)
                 ep_ret = 0.0
+                last_action_idx = None
 
             # Learn
             if len(self.replay) >= self.cfg.warmup_steps and (step % self.cfg.train_every == 0):
@@ -388,11 +493,39 @@ class DQNTrainer:
                     next_best = self.model(ns_t).argmax(dim=1)
                     q_next = self.target(ns_t).gather(1, next_best.unsqueeze(1)).squeeze(1)
                     y = r_t + self.cfg.gamma * (1.0 - d_t) * q_next
+                if self.cfg.lambda_mcts_value > 0.0:
+                    y_mcts_list = [self._mcts_value.get(i, float('nan')) for i in idx]
+                    y_mcts = torch.tensor(y_mcts_list, dtype=y.dtype, device=y.device)
+
+                    m = torch.isfinite(y_mcts)
+                    if m.any():
+                        y = torch.where(
+                            m,
+                            (1.0 - self.cfg.lambda_mcts_value) * y + self.cfg.lambda_mcts_value * y_mcts,y)
+
+                aux_loss = 0.0
+                if self.cfg.beta_mcts_policy > 0.0:
+                    A = self.cfg.action_space
+                    pi_targets = torch.full((len(idx), A), float('nan'), device=self.device, dtype=torch.float32)
+                    any_pi = False
+                    for row, irep in enumerate(idx):
+                        pi_mcts = self._mcts_policy.get(irep, None)
+                        if pi_mcts is not None:
+                            pi_targets[row, :] = torch.from_numpy(pi_mcts.astype(np.float32)).to(self.device)
+                            any_pi = True
+
+                    if any_pi:
+                        q_all = self.model(s_t)  # [B, A]
+                        logp = torch.log_softmax(q_all, dim=1)  # [B, A]
+                        m = torch.isfinite(pi_targets).all(dim=1)
+                        ce = -(pi_targets[m]*logp[m]).sum(dim=1).mean()
+                        aux_loss = self.cfg.beta_mcts_policy * ce# [M]
+
 
                 # TD error & PER-weighted Huber loss
                 td_error = y - q_sa  # [B]
                 per_sample = F.smooth_l1_loss(q_sa, y, reduction="none")
-                loss = (w_t * per_sample).mean()
+                loss = (w_t * per_sample).mean() + aux_loss
 
                 self.optim.zero_grad(set_to_none=True)
                 loss.backward()
@@ -467,14 +600,14 @@ class DQNTrainer:
 
 # ----- Example usage ----------------------------------------------------------
 if __name__ == "__main__":
-    from src.solvers.cube_gym import CubeGymCubie
+    from src.solvers.cube_gym import CubeGymCubie, inverse_action_idx
     from src.solvers.encoders import CubieEncoder
     from src.models.mlpq_net import MLPQNet
 
     # One-hot + MLP
-    env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=200)
+    env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=50, scorer=Scorer(ScoringOption.WEIGHTED_SLOT_AND_ORI))
     model = MLPQNet(in_dim=256, hidden=512)          # baseline
-    cfg = DQNConfig(total_steps=200_000, save_path="models/cube_mlp_actor.pt",
+    cfg = DQNConfig(total_steps=1000_000, save_path="models/cube_mlp_actor.pt",
                     experiment_name="cube_dqn_mlp_testing", output_dir="runs")
     DQNTrainer(env, model, cfg).train(start_scramble=4)
 

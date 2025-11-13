@@ -203,7 +203,7 @@ def _maybe_compile(module: nn.Module, device: torch.device) -> nn.Module:
 
         if device.type == "mps":
             # Avoid Inductor kernels on Metal; aot_eager builds the graph but executes eagerly
-            return torch.compile(module)
+            return torch.compile(module, backend = "eager")
         else:
             # CUDA/CPU: inductor is fine
             return torch.compile(module, mode="reduce-overhead", dynamic=False)

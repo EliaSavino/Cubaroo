@@ -120,6 +120,8 @@ class Replay:
 
         self.pos = (self.pos + 1) % self.cap
 
+        return self.pos
+
     def sample(self, batch: int):
         """
         Sample a mini-batch of transitions.
