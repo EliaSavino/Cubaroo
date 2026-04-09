@@ -1,12 +1,3 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
+"""Visualisation helpers for rendering cube states and animations."""
 
-Happy Hacking!
-
-Descr:
-
-'''
-
-import numpy as np
-import pandas as pd
+__all__: list[str] = []

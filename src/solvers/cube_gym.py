@@ -1,19 +1,16 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr: Cube Gym for solvers, translates cube state to tensors and actions to cube actions.
-
-'''
+"""Lightweight cube environment for planners and reinforcement learning."""
 from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Tuple, Dict, Any
+from typing import Any, Dict, Tuple
+
 import numpy as np
-from src.cube import Cube  # your class
-from src.scorer import Scorer, ScoringOption
-from src.solvers.encoders import CubieEncoder
+
+from ..cube import Cube
+from ..scorer import Scorer, ScoringOption
+from .encoders import CubieEncoder
+
+__all__ = ["CubeGymCubie", "MOVES", "apply_move", "inverse_action_idx"]
 
 MOVES = [f + s for f in "UDLRFB" for s in ["", "'"]]
 
@@ -37,6 +34,11 @@ def apply_move(cube: Cube, move: str) -> None:
         String code for the move. Must start with a face letter in {"U","D","L","R","F","B"}
         and may optionally end with an apostrophe (e.g. "R'") for counter-clockwise rotation.
     """
+    if not move or move[0].upper() not in {"U", "D", "L", "R", "F", "B"}:
+        raise ValueError(f"Invalid move {move!r}.")
+    if len(move) > 2 or (len(move) == 2 and move[1] != "'"):
+        raise ValueError(f"Invalid move {move!r}.")
+
     face = move[0]
     clockwise = not move.endswith("'")
     cube.rotate(face, clockwise)
@@ -53,8 +55,7 @@ class CubeGymCubie:
       reward, done flag, and info dict.
 
     Reward design:
-        reward = α × Δ(score) − 0.0001
-        +5 bonus is added when the cube is fully solved.
+        reward = alpha * delta(score)
 
     The score function is assumed to increase as the cube approaches the solved state.
 
@@ -79,11 +80,8 @@ class CubeGymCubie:
     - `Cube` must expose:
         • `.rotate(face: str, clockwise: bool)`
         • `.scramble(length: int)`
-        • `.score() -> float`
         • `.is_solved() -> bool`
         • `.get_history() -> pandas.DataFrame`
-    - The environment does **not** internally seed random scrambles; reproducibility
-      should be handled by the caller.
 
     Examples
     --------
@@ -102,7 +100,7 @@ class CubeGymCubie:
     scorer: Scorer = field(default_factory=lambda: Scorer(option=ScoringOption.LENGTH_AWARE))
     MCTS_planner = None
 
-    def reset(self, scramble_len: int = 0) -> np.ndarray:
+    def reset(self, scramble_len: int = 0, seed: int | None = None) -> np.ndarray:
         """
         Reset the environment and return the initial encoded state.
 
@@ -110,6 +108,8 @@ class CubeGymCubie:
         ----------
         scramble_len : int, default=0
             Number of random moves to scramble the cube before starting.
+        seed : int or None, default=None
+            Optional random seed forwarded to ``Cube.scramble`` for reproducibility.
 
         Returns
         -------
@@ -117,7 +117,7 @@ class CubeGymCubie:
             Encoded observation representing the scrambled cube.
         """
         self.cube = Cube()
-        self.cube.scramble(length=scramble_len)
+        self.cube.scramble(length=scramble_len, seed=seed)
         self.prev_score = self.scorer(self.cube)
         return self.encoder.encode(self.cube)
 
@@ -136,7 +136,7 @@ class CubeGymCubie:
         observation : np.ndarray
             Encoded cube state after the move.
         reward : float
-            Change in cube score (scaled by ``alpha``) minus a small step penalty.
+            Change in cube score scaled by ``alpha``.
         done : bool
             True if the cube is solved or max_steps exceeded.
         info : dict
@@ -144,15 +144,17 @@ class CubeGymCubie:
 
         Notes
         -----
-        - Adds a +5 bonus when the cube is solved.
         - Uses the cube's internal history to determine episode length.
         """
+        if action_idx < 0 or action_idx >= len(MOVES):
+            raise IndexError(f"Action index {action_idx} out of range for {len(MOVES)} moves.")
+
         move = MOVES[action_idx]
         apply_move(self.cube, move)
 
         score = self.scorer(self.cube)
         delta = score - self.prev_score
-        reward = self.alpha * delta - 0.0000  # small penalty encourages faster solving
+        reward = self.alpha * delta
         self.prev_score = score
 
         solved = self.cube.is_solved()

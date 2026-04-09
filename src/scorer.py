@@ -1,26 +1,33 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-'''
+"""State scoring utilities used by planners and reinforcement learning loops."""
 
 from __future__ import annotations
 
 import copy
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import lru_cache
-from collections import deque
-from typing import Callable, Tuple, Dict, List
-from src.cube import Cube
 from math import exp
+from typing import Callable, Dict
+
+from .cube import Cube
+
+__all__ = [
+    "Scorer",
+    "ScoringOption",
+    "SCORE_FN",
+    "score_solved_fraction",
+    "score_weighted_slot_and_ori",
+    "score_phase1_naive",
+    "score_phase1_pdb",
+    "score_phase1_gated",
+    "score_length_aware",
+]
 
 ## --- Helper: hashable key for caching ---
-def _state_key(cube: Cube) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int, int], ...]]:
+def _state_key(
+    cube: Cube,
+) -> tuple[tuple[tuple[int | None, int], ...], tuple[tuple[int | None, int], ...]]:
     """
     Generate a hashable representation of the cube’s full state.
 
@@ -37,9 +44,7 @@ def _state_key(cube: Cube) -> tuple[tuple[tuple[int, int], ...], tuple[tuple[int
               - A tuple of (piece_idx, ori) pairs for each corner.
               - A tuple of (piece_idx, ori) pairs for each edge.
     """
-
-    return (tuple((c.piece_idx, c.ori) for c in cube.corners),
-            tuple((e.piece_idx, e.ori) for e in cube.edges))
+    return cube.state_key()
 
 # --- Phase-1 components ---
 UD_SLICE_EDGE_IDS = {8, 9, 10, 11}

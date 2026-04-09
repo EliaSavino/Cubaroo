@@ -1,15 +1,17 @@
-"""
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-"""
+"""Cubie dataclasses and lookup tables for the Rubik's Cube model."""
 
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, ClassVar, Iterator
+
+__all__ = [
+    "CORNER_SLOTS",
+    "EDGE_SLOTS",
+    "CORNER_PIECE_COLORS",
+    "EDGE_PIECE_COLORS",
+    "Cubie",
+    "CornerCubie",
+    "EdgeCubie",
+]
 
 # Face ids: 0=U, 1=R, 2=F, 3=D, 4=L, 5=B
 CORNER_SLOTS = ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"]

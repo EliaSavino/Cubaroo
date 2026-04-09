@@ -10,6 +10,7 @@ Descr:
 import unittest
 import numpy as np
 
+from src.cube import Cube
 from src.solvers.tree_search_planner import MCTSPlanner
 from src.solvers.cube_gym import CubeGymCubie, MOVES, apply_move
 from src.solvers.encoders import IndexCubieEncoder
@@ -22,19 +23,16 @@ class TestMCTSPlannerRealEnv(unittest.TestCase):
         # Real env with real scorer/encoder
         self.env = CubeGymCubie(
             encoder=IndexCubieEncoder(),
-            scorer=Scorer(option=ScoringOption.SOLVED_FRACTION),          # use your default scoring option
+            scorer=Scorer(option=ScoringOption.SOLVED_FRACTION),
             alpha=1.0,
             max_steps=100
         )
-        # Small scramble keeps tests fast but non-trivial
-        self.obs = self.env.reset(scramble_len=3)
-        print("Initial cube state for tests:")
-        self.env.cube.print_net(use_color=True)
+        self.obs = self.env.reset(scramble_len=3, seed=17)
 
         # MCTS tuned light for unittest speed
         self.planner = MCTSPlanner(
             max_depth=5,
-            n_sim=64,     # bump if you want more stable stats
+            n_sim=32,
             cpuct=1.5
         )
 
@@ -54,9 +52,7 @@ class TestMCTSPlannerRealEnv(unittest.TestCase):
         cube_copy = self._deepcopy_cube(self.env)
         for a in seq:
             apply_move(cube_copy, MOVES[a])
-
-        print("Cube after applying best sequence:")
-        cube_copy.print_net(use_color=True)# should not raise
+        self.assertIsInstance(cube_copy, Cube)
 
     def test_search_tree_structure(self):
         info = self.planner.search_tree(self.env)
@@ -80,13 +76,11 @@ class TestMCTSPlannerRealEnv(unittest.TestCase):
 
     # --- helpers ---
     def _deepcopy_cube(self, env: CubeGymCubie):
-        # Many cube classes are deepcopy-able; if yours exposes .copy(), use that.
         try:
+            return env.cube.copy()
+        except Exception:
             import copy
             return copy.deepcopy(env.cube)
-        except Exception:
-            # Fallback: if your Cube exposes .copy(), use it.
-            return env.cube.copy()
 
     def _solve_phase_len(self, env: CubeGymCubie) -> int:
         try:

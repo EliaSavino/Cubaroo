@@ -1,23 +1,17 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-'''
+"""Monte Carlo tree search planner for cube environments."""
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Any
-from src.solvers.cube_gym import MOVES, apply_move, inverse_action_idx
+
 import copy
 import math
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
+from .cube_gym import MOVES, apply_move, inverse_action_idx
 
-
+__all__ = ["MCTSPlanner"]
 @dataclass
 class MCTSPlanner:
     """

@@ -1,21 +1,23 @@
-"""
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-"""
+"""Core Rubik's Cube state model and rendering helpers."""
+import os
+import tempfile
 from contextlib import contextmanager
+from copy import deepcopy
 from functools import wraps
-from typing import Dict, List, Tuple, Callable, Any
+from typing import Any, Callable, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+_CACHE_DIR = os.path.join(tempfile.gettempdir(), "cubaroo-cache")
+_MPL_CONFIG_DIR = os.path.join(_CACHE_DIR, "matplotlib")
+os.makedirs(_MPL_CONFIG_DIR, exist_ok=True)
+os.environ.setdefault("XDG_CACHE_HOME", _CACHE_DIR)
+os.environ.setdefault("MPLCONFIGDIR", _MPL_CONFIG_DIR)
+
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from src.cubies import (
+from .cubies import (
     EdgeCubie,
     CornerCubie,
     CORNER_SLOTS,
@@ -23,7 +25,9 @@ from src.cubies import (
     CORNER_PIECE_COLORS,
     EDGE_PIECE_COLORS,
 )
-from src.visualisation.utils_visualization import _cubie_faces, _color_lookup, _unit_cubie_quads
+from .visualisation.utils_visualization import _color_lookup, _unit_cubie_quads
+
+__all__ = ["Cube", "VALID_FACES", "HISTORY_COLUMNS"]
 
 # Move tables (on *slot indices*, not on piece ids)
 CORN_PERM = {
@@ -59,6 +63,9 @@ EDGE_ORI = {
     "F": [0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0],
     "B": [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1],
 }
+
+VALID_FACES: tuple[str, ...] = ("U", "D", "R", "L", "F", "B")
+HISTORY_COLUMNS: list[str] = ["step", "face", "clockwise", "phase"]
 
 
 def invert_perm_and_delta(perm: list[int], delta: list[int], mod: int) -> tuple[list[int], list[int]]:
@@ -100,7 +107,7 @@ def track_history(method: Callable[..., Any]) -> Callable[..., Any]:
 
         # lazy-init and maybe record
         if not hasattr(self, "_history") or not isinstance(self._history, pd.DataFrame):
-            self._history = pd.DataFrame(columns=["step", "face", "clockwise", "phase"])
+            self._history = pd.DataFrame(columns=HISTORY_COLUMNS)
         if not hasattr(self, "_scramble_len"):
             self._scramble_len = 0
         if not hasattr(self, "_history_enabled"):
@@ -227,9 +234,13 @@ class Cube:
             - self._scramble_len: int, number of rows in history that belong to the scramble.
         """
         if not hasattr(self, "_history") or not isinstance(self._history, pd.DataFrame):
-            self._history = pd.DataFrame(columns=["step", "face", "clockwise", "phase"])
+            self._history = pd.DataFrame(columns=HISTORY_COLUMNS)
         if not hasattr(self, "_scramble_len"):
             self._scramble_len = 0
+        if not hasattr(self, "_history_enabled"):
+            self._history_enabled = True
+        if not hasattr(self, "_phase"):
+            self._phase = "solve"
 
     @contextmanager
     def history_phase(self, phase: str):
@@ -258,10 +269,32 @@ class Cube:
         finally:
             self._history_enabled = prev
 
-        def clear_history(self) -> None:
-            """Clear the history DataFrame and reset the scramble checkpoint."""
-            self._history = pd.DataFrame(columns=["step", "face", "clockwise", "phase"])
-            self._scramble_len = 0
+    def clear_history(self) -> None:
+        """Clear the move history and reset the scramble checkpoint."""
+        self._history = pd.DataFrame(columns=HISTORY_COLUMNS)
+        self._scramble_len = 0
+        self._phase = "solve"
+        self._history_enabled = True
+
+    def copy(self) -> "Cube":
+        """Return a deep copy of the cube state."""
+        return deepcopy(self)
+
+    def state_key(
+        self,
+    ) -> tuple[tuple[tuple[int | None, int], ...], tuple[tuple[int | None, int], ...]]:
+        """Return a hashable representation of the current cube state."""
+        return (
+            tuple((corner.piece_idx, corner.ori) for corner in self.corners),
+            tuple((edge.piece_idx, edge.ori) for edge in self.edges),
+        )
+
+    @staticmethod
+    def _validate_face(face: str) -> str:
+        normalized = face.upper()
+        if normalized not in VALID_FACES:
+            raise ValueError(f"Unsupported face {face!r}. Expected one of {VALID_FACES}.")
+        return normalized
 
     def moves_since_scramble(self) -> int:
         """Number of moves logged after the scramble checkpoint."""
@@ -294,6 +327,7 @@ class Cube:
             face: Face identifier ("U", "D", "R", "L", "F", "B").
             clockwise: If False, performs the inverse (counterclockwise) rotation.
         """
+        face = self._validate_face(face)
         cperm = CORN_PERM[face]
         cdel = CORN_ORI[face]
         eperm = EDGE_PERM[face]
@@ -337,6 +371,9 @@ class Cube:
             - Records each move with phase='scramble'.
             - Sets self._scramble_len to the new total history length.
         """
+        if length < 0:
+            raise ValueError("Scramble length must be non-negative.")
+
         import random
         rng = random.Random(seed)
         faces = ["U", "D", "R", "L", "F", "B"]
@@ -375,17 +412,12 @@ class Cube:
 
     def score(self) -> float:
         """
-        Heuristic score that rewards being solved with fewer *post-scramble* moves.
+        Return the built-in baseline score for the cube state.
 
-            score = solved_fraction() / max(1, moves_since_scramble()
-            edit we drop the denom to just solved_fraction() (for now, we're trying different reward policies)
-
-        Notes
-        -----
-        - Ignores scramble length when penalizing: the timer starts after scrambling.
-        - Swap this out later for a domain-specific objective if desired.
+        The core cube object intentionally keeps this simple and stable:
+        it reports the fraction of solved cubies and leaves richer reward
+        shaping to the dedicated scorers in :mod:`src.scorer`.
         """
-        denom = max(1, self.moves_since_scramble())
         return self.solved_fraction()
     # ---------- VIEWS ----------
     def to_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -402,20 +434,21 @@ class Cube:
         # positions are: which *piece id* currently sits in each slot index
         corner_pos = np.empty(8, dtype=np.int8)
         corner_ori = np.empty(8, dtype=np.int8)
-        for i, slot in enumerate(CORNER_SLOTS):
-            # find cubie whose slot_name == slot
-            c = self.corners[i]  # by construction corners[i] lives at slot i
-            piece_id = CORNER_SLOTS.index(self._home_slot_of_corner(c.stickers))
+        for i, corner in enumerate(self.corners):
+            piece_id = corner.piece_idx
+            if piece_id is None:
+                piece_id = CORNER_SLOTS.index(self._home_slot_of_corner(corner.stickers))
             corner_pos[i] = piece_id
-            corner_ori[i] = c.ori
+            corner_ori[i] = corner.ori
 
         edge_pos = np.empty(12, dtype=np.int8)
         edge_ori = np.empty(12, dtype=np.int8)
-        for i, slot in enumerate(EDGE_SLOTS):
-            e = self.edges[i]
-            piece_id = EDGE_SLOTS.index(self._home_slot_of_edge(e.stickers))
+        for i, edge in enumerate(self.edges):
+            piece_id = edge.piece_idx
+            if piece_id is None:
+                piece_id = EDGE_SLOTS.index(self._home_slot_of_edge(edge.stickers))
             edge_pos[i] = piece_id
-            edge_ori[i] = e.ori
+            edge_ori[i] = edge.ori
         return corner_pos, corner_ori, edge_pos, edge_ori
 
     def to_facelets(self) -> np.ndarray:
@@ -631,19 +664,8 @@ class Cube:
             plt.show()
 
 
-    def print_net(self, use_color: bool = True) -> None:
-        """
-        Print a compact text-based cube net to the terminal.
-
-              [U]
-        [L] [F] [R] [B]
-              [D]
-
-        Args:
-            use_color: If True, apply ANSI color codes to facelet numbers
-                       for readability in supported terminals.
-        """
-
+    def format_net(self, use_color: bool = True) -> str:
+        """Return a compact text net representation of the cube."""
         F = self.to_facelets()
         # face units (0..3), we’ll scale by 3 below
         layout = {
@@ -684,14 +706,24 @@ class Cube:
                         f"{COLOR_CODES[val]}{val}{RESET}" if use_color else str(val)
                     )
 
-        for row in grid:
-            print(" ".join(row))
+        return "\n".join(" ".join(row) for row in grid)
 
-    def is_solved(self)->bool:
+    def print_net(self, use_color: bool = True) -> None:
         """
-        Check if the cube is in a solved state.
-        :return:
+        Print a compact text-based cube net to the terminal.
+
+              [U]
+        [L] [F] [R] [B]
+              [D]
+
+        Args:
+            use_color: If True, apply ANSI color codes to facelet numbers
+                       for readability in supported terminals.
         """
+        print(self.format_net(use_color=use_color))
+
+    def is_solved(self) -> bool:
+        """Return ``True`` when every cubie is in its home slot and orientation."""
         for i, c in enumerate(self.corners):
             if c.piece_idx != i or (c.ori % 3) != 0:
                 return False
@@ -699,3 +731,6 @@ class Cube:
             if e.piece_idx != i or (e.ori % 2) != 0:
                 return False
         return True
+
+    def __repr__(self) -> str:
+        return f"Cube(solved={self.is_solved()}, moves_since_scramble={self.moves_since_scramble()})"

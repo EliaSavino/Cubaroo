@@ -1,9 +1,5 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
+"""Model helpers and neural network building blocks used by the trainers."""
 
-Happy Hacking!
+from .actor import ModelActor, build_actor
 
-Descr:
-
-'''
+__all__ = ["ModelActor", "build_actor"]

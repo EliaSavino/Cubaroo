@@ -1,14 +1,13 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-'''
+"""Cube state encoders used by planners and learning models."""
 from typing import Protocol, runtime_checkable
 import numpy as np
+
+__all__ = [
+    "CubeEncoderProtocol",
+    "IndexCubieEncoder",
+    "FlatCubieEncoder",
+    "CubieEncoder",
+]
 
 
 # =============================================================================

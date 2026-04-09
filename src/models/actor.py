@@ -1,20 +1,15 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
-
-Happy Hacking!
-
-Descr:
-
-'''
+"""Actor helpers for model-backed cube policies."""
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional
+
 import numpy as np
 import torch
 from torch import nn
-from src.models.adaptors import TorchQAdapter, SklearnQAdapter
-from src.models.policy import EpsGreedyPolicy
+
+from .adaptors import TorchQAdapter, SklearnQAdapter
+from .policy import EpsGreedyPolicy
 
 @dataclass
 class ModelActor:

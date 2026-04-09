@@ -1,9 +1,3 @@
-'''
-Author: Elia Savino
-github: github.com/EliaSavino
+"""Script entrypoints used for local training experiments."""
 
-Happy Hacking!
-
-Descr:
-
-'''
+__all__: list[str] = []
