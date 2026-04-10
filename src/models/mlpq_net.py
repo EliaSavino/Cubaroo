@@ -57,15 +57,18 @@ class MLPQNet(nn.Module):
         self.in_dim = in_dim
         self.hidden = hidden
         self.n_actions = n_actions
+        mid = max(hidden // 2, 128)
 
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(hidden, int(0.5 * hidden)),
-            nn.ReLU(inplace=True),
-            nn.Linear(int(0.5 * hidden), int(0.1 * hidden)),
-            nn.ReLU(inplace=True),
-            nn.Linear(int(0.1 * hidden), n_actions),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Linear(hidden, mid),
+            nn.GELU(),
+            nn.Linear(mid, n_actions),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

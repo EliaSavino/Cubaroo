@@ -9,6 +9,7 @@ Descr:
 '''
 from __future__ import annotations
 
+import math
 import numpy as np
 import torch
 from torch import nn as nn
@@ -72,8 +73,9 @@ def linear_epsilon(step: int, cfg: "DQNConfig") -> float:
     """
     Linearly anneal epsilon for ε-greedy exploration.
 
-    The schedule interpolates from ``cfg.eps_start`` to ``cfg.eps_end`` over
-    ``cfg.eps_decay_steps`` steps and then stays at ``cfg.eps_end``.
+    The schedule optionally holds exploration at ``cfg.eps_start`` for
+    ``cfg.eps_hold_steps`` steps, then decays to ``cfg.eps_end`` using either
+    a linear or cosine schedule.
 
     Parameters
     ----------
@@ -84,6 +86,8 @@ def linear_epsilon(step: int, cfg: "DQNConfig") -> float:
         - ``eps_start`` (float): starting epsilon.
         - ``eps_end`` (float): final epsilon after decay.
         - ``eps_decay_steps`` (int): number of steps over which to decay.
+        - ``eps_hold_steps`` (int): optional number of steps to hold at ``eps_start``.
+        - ``eps_schedule`` (str): one of ``{"linear", "cosine"}``.
 
     Returns
     -------
@@ -115,11 +119,22 @@ def linear_epsilon(step: int, cfg: "DQNConfig") -> float:
     if step < 0:
         raise ValueError("step must be non-negative")
 
+    hold_steps = max(0, int(getattr(cfg, "eps_hold_steps", 0)))
+    if step <= hold_steps:
+        return float(cfg.eps_start)
+
     # Guard against zero/negative decay to avoid division by zero.
     if getattr(cfg, "eps_decay_steps", 0) <= 0:
         return float(cfg.eps_end)
 
-    t = min(1.0, step / float(cfg.eps_decay_steps))
+    decay_step = step - hold_steps
+    t = min(1.0, decay_step / float(cfg.eps_decay_steps))
+    schedule = str(getattr(cfg, "eps_schedule", "linear")).lower()
+
+    if schedule == "cosine":
+        anneal = 0.5 * (1.0 + math.cos(math.pi * t))
+        return float(cfg.eps_end + (cfg.eps_start - cfg.eps_end) * anneal)
+
     return float(cfg.eps_start + (cfg.eps_end - cfg.eps_start) * t)
 
 

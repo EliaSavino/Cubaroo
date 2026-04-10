@@ -46,5 +46,8 @@ python -m unittest discover -s tests
   and encoded observations are derived views.
 - Scrambles support deterministic seeds so tests and experiments can reproduce
   the same states.
+- The default RL scorer is now state-only and dense. It rewards phase-1
+  progress, orientation, slot correctness, first-layer progress, middle-layer
+  progress, and exact solved pieces without depending on move history.
 - Rich reward shaping lives in `src.scorer`; the `Cube` object keeps only a
-  simple baseline score.
+  simple baseline score and explicit consistency checks.

@@ -1,6 +1,7 @@
 import unittest
 
 from src.cube import Cube, VALID_FACES
+from src.solvers.cube_gym import apply_move
 
 
 class TestCubeCore(unittest.TestCase):
@@ -34,6 +35,7 @@ class TestCubeCore(unittest.TestCase):
         self.assertEqual(left.get_history().to_dict("records"), right.get_history().to_dict("records"))
         self.assertEqual(left.moves_since_scramble(), 0)
         self.assertTrue((left.get_history()["phase"] == "scramble").all())
+        self.assertEqual(left.consistency_issues(), [])
 
     def test_clear_history_and_format_net(self) -> None:
         cube = Cube()
@@ -55,6 +57,27 @@ class TestCubeCore(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             cube.rotate("X")
+
+    def test_random_move_sequence_preserves_consistency(self) -> None:
+        cube = Cube()
+        moves = ["R", "U", "F", "L'", "D", "B'", "R'", "U'"]
+
+        for move in moves:
+            apply_move(cube, move)
+            cube.assert_consistent()
+
+    def test_inverse_sequence_returns_to_solved_state(self) -> None:
+        cube = Cube()
+        moves = ["R", "U", "F", "L'", "D", "B'"]
+
+        for move in moves:
+            apply_move(cube, move)
+        for move in reversed(moves):
+            inverse = move[0] if move.endswith("'") else f"{move}'"
+            apply_move(cube, inverse)
+
+        cube.assert_consistent()
+        self.assertTrue(cube.is_solved())
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ __all__ = [
     "Scorer",
     "ScoringOption",
     "SCORE_FN",
+    "score_consistent_progress",
+    "score_lookahead_progress",
     "score_solved_fraction",
     "score_weighted_slot_and_ori",
     "score_phase1_naive",
@@ -295,6 +297,13 @@ def _udmask_from_state(edges: tuple[tuple[int, int], ...]) -> int:
     return mask
 
 # --- Basic metrics ---
+def _count_solved_pieces(cube: Cube) -> int:
+    """Count cubies that are both correctly placed and correctly oriented."""
+    solved = sum(c.piece_idx == i and (c.ori % 3) == 0 for i, c in enumerate(cube.corners))
+    solved += sum(e.piece_idx == i and (e.ori % 2) == 0 for i, e in enumerate(cube.edges))
+    return int(solved)
+
+
 def _frac_in_correct_slot(cube: Cube) -> float:
     """
     Compute the fraction of cubies currently located in their correct slots.
@@ -331,6 +340,37 @@ def _frac_correct_ori(cube: Cube) -> float:
     ok += sum((e.ori % 2) == 0 for e in cube.edges)
     return ok / 20.0
 
+
+def _ud_slice_progress(cube: Cube) -> float:
+    """Fraction of UD-slice edges currently located in slice slots."""
+    in_slice = sum(1 for slot in UD_SLICE_EDGE_IDS if cube.edges[slot].piece_idx in UD_SLICE_EDGE_IDS)
+    return in_slice / 4.0
+
+
+def _first_layer_progress(cube: Cube) -> float:
+    """Solved fraction of the U-layer pieces: 4 corners and 4 edges."""
+    tracked_slots = [0, 1, 2, 3]
+    solved = sum(cube.corners[i].piece_idx == i and cube.corners[i].ori % 3 == 0 for i in tracked_slots)
+    solved += sum(cube.edges[i].piece_idx == i and cube.edges[i].ori % 2 == 0 for i in tracked_slots)
+    return solved / 8.0
+
+
+def _middle_layer_progress(cube: Cube) -> float:
+    """Solved fraction of the four middle-layer edges."""
+    tracked_slots = [8, 9, 10, 11]
+    solved = sum(cube.edges[i].piece_idx == i and cube.edges[i].ori % 2 == 0 for i in tracked_slots)
+    return solved / 4.0
+
+
+def _phase1_feature_progress(cube: Cube) -> float:
+    """Cheap state-only progress for orientation and UD-slice placement."""
+    corners, edges = _state_key(cube)
+    co, eo, ud_mis = _co_eo_ud_from_key((corners, edges))
+    corner_progress = 1.0 - (co / 8.0)
+    edge_progress = 1.0 - (eo / 12.0)
+    ud_progress = 1.0 - (ud_mis / 4.0)
+    return 0.4 * corner_progress + 0.4 * edge_progress + 0.2 * ud_progress
+
 def _sig(x: float, k: float, t: float) -> float:
     """
     Smooth logistic function used for reward gating and normalization.
@@ -363,12 +403,7 @@ def score_solved_fraction(cube: Cube) -> float:
     Returns:
         float: Proportion in [0, 1] of cubies that are completely solved.
     """
-    ok = 0
-    for i, c in enumerate(cube.corners):
-        ok += (c.piece_idx == i and (c.ori % 3) == 0)
-    for i, e in enumerate(cube.edges):
-        ok += (e.piece_idx == i and (e.ori % 2) == 0)
-    return ok / 20.0
+    return _count_solved_pieces(cube) / 20.0
 
 def score_weighted_slot_and_ori(cube: Cube, w_slot: float = 0.6) -> float:
     """
@@ -395,6 +430,59 @@ def score_weighted_slot_and_ori(cube: Cube, w_slot: float = 0.6) -> float:
         in_slot = (e.piece_idx == i)
         s += w_slot * in_slot + w_ori * (in_slot and (e.ori % 2 == 0))
     return s / 20.0
+
+
+def score_consistent_progress(cube: Cube) -> float:
+    """
+    Dense, state-only shaping for reinforcement learning.
+
+    The score is a convex combination of:
+      - cheap phase-1 progress (orientation + UD slice)
+      - fraction of correctly oriented cubies
+      - fraction of cubies in the correct slot
+      - first-layer progress
+      - middle-layer edge progress
+      - exact solved-piece fraction
+
+    Unlike the previous history-aware default, this function depends only on the
+    current cube arrangement. That keeps the reward consistent with the encoded
+    observation and avoids state aliasing in Q-learning.
+    """
+    phase1 = _phase1_feature_progress(cube)
+    orientation = _frac_correct_ori(cube)
+    slot = _frac_in_correct_slot(cube)
+    first_layer = _first_layer_progress(cube)
+    middle_layer = _middle_layer_progress(cube)
+    solved = score_solved_fraction(cube)
+    return (
+        0.25 * phase1
+        + 0.20 * orientation
+        + 0.15 * slot
+        + 0.15 * first_layer
+        + 0.10 * middle_layer
+        + 0.15 * solved
+    )
+
+
+def score_lookahead_progress(cube: Cube) -> float:
+    """
+    One-step optimistic variant of ``score_consistent_progress``.
+
+    This score boosts states that may require a temporary setback before the next
+    meaningful gain. It never drops below the dense base score and stays purely
+    a function of cube state.
+    """
+    current = score_consistent_progress(cube)
+    best_child = current
+
+    for face in ("U", "D", "L", "R", "F", "B"):
+        for clockwise in (True, False):
+            child = cube.copy()
+            child.rotate(face, clockwise)
+            best_child = max(best_child, score_consistent_progress(child))
+
+    optimistic = 0.90 * best_child
+    return min(1.0, current + 0.40 * max(0.0, optimistic - current))
 
 
 def score_phase1_naive(cube: Cube) -> float:
@@ -484,6 +572,11 @@ def score_length_aware(cube: Cube) -> float:
 
     Returns:
         float: Length-aware score in [0, 1] that decays gently with move count.
+
+    Warning:
+        This score depends on move history as well as cube state. It is useful
+        for diagnostics, but it is not a good default for Q-learning unless the
+        observation also includes the relevant history features.
     """
     base = score_phase1_gated(cube)
     moves = 0
@@ -495,6 +588,8 @@ def score_length_aware(cube: Cube) -> float:
 
 # --- Registry ---
 class ScoringOption(Enum):
+    CONSISTENT_PROGRESS = auto()
+    LOOKAHEAD_PROGRESS = auto()
     SOLVED_FRACTION = auto()
     WEIGHTED_SLOT_AND_ORI = auto()
     PHASE1_NAIVE = auto()
@@ -503,6 +598,8 @@ class ScoringOption(Enum):
     PHASE1_GATED = auto()
 
 SCORE_FN: Dict[ScoringOption, Callable] = {
+    ScoringOption.CONSISTENT_PROGRESS: score_consistent_progress,
+    ScoringOption.LOOKAHEAD_PROGRESS: score_lookahead_progress,
     ScoringOption.SOLVED_FRACTION: score_solved_fraction,
     ScoringOption.WEIGHTED_SLOT_AND_ORI: score_weighted_slot_and_ori,
     ScoringOption.PHASE1_NAIVE: score_phase1_naive,
@@ -513,7 +610,7 @@ SCORE_FN: Dict[ScoringOption, Callable] = {
 
 @dataclass
 class Scorer:
-    option: ScoringOption = ScoringOption.PHASE1_GATED
+    option: ScoringOption = ScoringOption.CONSISTENT_PROGRESS
     def __call__(self, cube) -> float:
         """
         Dispatch to the selected scoring function.

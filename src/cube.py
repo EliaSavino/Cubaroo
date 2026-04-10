@@ -66,6 +66,26 @@ EDGE_ORI = {
 
 VALID_FACES: tuple[str, ...] = ("U", "D", "R", "L", "F", "B")
 HISTORY_COLUMNS: list[str] = ["step", "face", "clockwise", "phase"]
+EXPECTED_CORNER_PIECES = set(range(len(CORNER_SLOTS)))
+EXPECTED_EDGE_PIECES = set(range(len(EDGE_SLOTS)))
+
+
+def _permutation_parity(values: list[int]) -> int:
+    """Return permutation parity: 0 for even, 1 for odd."""
+    parity = 0
+    seen = [False] * len(values)
+    for start in range(len(values)):
+        if seen[start]:
+            continue
+        cycle_len = 0
+        idx = start
+        while not seen[idx]:
+            seen[idx] = True
+            idx = values[idx]
+            cycle_len += 1
+        if cycle_len > 0:
+            parity ^= (cycle_len - 1) & 1
+    return parity
 
 
 def invert_perm_and_delta(perm: list[int], delta: list[int], mod: int) -> tuple[list[int], list[int]]:
@@ -289,6 +309,92 @@ class Cube:
             tuple((edge.piece_idx, edge.ori) for edge in self.edges),
         )
 
+    def consistency_issues(self) -> list[str]:
+        """Return structural issues found in the current cube representation."""
+        issues: list[str] = []
+
+        if len(self.corners) != len(CORNER_SLOTS):
+            issues.append(f"Expected {len(CORNER_SLOTS)} corners, found {len(self.corners)}.")
+        if len(self.edges) != len(EDGE_SLOTS):
+            issues.append(f"Expected {len(EDGE_SLOTS)} edges, found {len(self.edges)}.")
+        if issues:
+            return issues
+
+        corner_slots = [corner.slot_name for corner in self.corners]
+        edge_slots = [edge.slot_name for edge in self.edges]
+        if corner_slots != CORNER_SLOTS:
+            issues.append("Corner slots are not aligned with canonical slot order.")
+        if edge_slots != EDGE_SLOTS:
+            issues.append("Edge slots are not aligned with canonical slot order.")
+
+        for corner in self.corners:
+            try:
+                corner.validate()
+            except ValueError as exc:
+                issues.append(str(exc))
+        for edge in self.edges:
+            try:
+                edge.validate()
+            except ValueError as exc:
+                issues.append(str(exc))
+
+        corner_piece_ids = [corner.piece_idx for corner in self.corners]
+        edge_piece_ids = [edge.piece_idx for edge in self.edges]
+        if any(piece is None for piece in corner_piece_ids):
+            issues.append("Corner piece indices must be assigned for all corners.")
+        if any(piece is None for piece in edge_piece_ids):
+            issues.append("Edge piece indices must be assigned for all edges.")
+
+        if not issues:
+            if set(int(piece) for piece in corner_piece_ids) != EXPECTED_CORNER_PIECES:
+                issues.append("Corner piece indices are not a complete permutation of 0..7.")
+            if set(int(piece) for piece in edge_piece_ids) != EXPECTED_EDGE_PIECES:
+                issues.append("Edge piece indices are not a complete permutation of 0..11.")
+
+        corner_stickers = [corner.stickers for corner in self.corners]
+        edge_stickers = [edge.stickers for edge in self.edges]
+        if len(set(corner_stickers)) != len(corner_stickers):
+            issues.append("Corner sticker tuples must be unique.")
+        if len(set(edge_stickers)) != len(edge_stickers):
+            issues.append("Edge sticker tuples must be unique.")
+        if set(corner_stickers) != set(CORNER_PIECE_COLORS):
+            issues.append("Corner sticker tuples do not match the canonical corner pieces.")
+        if set(edge_stickers) != set(EDGE_PIECE_COLORS):
+            issues.append("Edge sticker tuples do not match the canonical edge pieces.")
+
+        co = sum(corner.ori for corner in self.corners) % 3
+        eo = sum(edge.ori for edge in self.edges) % 2
+        if co != 0:
+            issues.append(f"Corner orientation parity invalid: sum mod 3 = {co}.")
+        if eo != 0:
+            issues.append(f"Edge orientation parity invalid: sum mod 2 = {eo}.")
+
+        if not issues:
+            corner_perm = [int(piece) for piece in corner_piece_ids]
+            edge_perm = [int(piece) for piece in edge_piece_ids]
+            if _permutation_parity(corner_perm) != _permutation_parity(edge_perm):
+                issues.append("Corner and edge permutation parity do not match.")
+
+        facelets = self.to_facelets()
+        if facelets.shape != (6, 3, 3):
+            issues.append(f"Facelet array shape must be (6, 3, 3), got {facelets.shape}.")
+        else:
+            unique, counts = np.unique(facelets, return_counts=True)
+            color_counts = dict(zip(unique.tolist(), counts.tolist()))
+            for color in range(6):
+                if color_counts.get(color, 0) != 9:
+                    issues.append(
+                        f"Color {color} should appear exactly 9 times, found {color_counts.get(color, 0)}."
+                    )
+
+        return issues
+
+    def assert_consistent(self) -> None:
+        """Raise when the current cube representation is structurally inconsistent."""
+        issues = self.consistency_issues()
+        if issues:
+            raise ValueError("; ".join(issues))
+
     @staticmethod
     def _validate_face(face: str) -> str:
         normalized = face.upper()
@@ -495,9 +601,12 @@ class Cube:
             AssertionError: If the sum of corner orientations mod 3
                             or edge orientations mod 2 is non-zero.
         """
-        co = sum(c.ori for c in self.corners) % 3
-        eo = sum(e.ori for e in self.edges) % 2
-        assert co == 0 and eo == 0, (co, eo)
+        issues = [
+            issue for issue in self.consistency_issues()
+            if "orientation parity" in issue or "permutation parity" in issue
+        ]
+        if issues:
+            raise AssertionError("; ".join(issues))
 
     def test_move(self, m: str) -> None:
         """

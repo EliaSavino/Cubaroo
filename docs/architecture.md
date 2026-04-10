@@ -8,7 +8,8 @@
 
 - `src/cube.py`
   The main cube state container. Handles rotations, scrambling, move history,
-  solved checks, array conversion, and text/3D rendering helpers.
+  solved checks, structural consistency validation, array conversion, and
+  text/3D rendering helpers.
 
 - `src/cubies.py`
   Dataclasses and lookup tables for corners and edges, including canonical slot
@@ -16,7 +17,8 @@
 
 - `src/scorer.py`
   Contains basic solved-fraction scoring, weighted placement/orientation scores,
-  and phase-1 heuristics including cached pattern-database support.
+  a dense state-only default scorer for RL, and phase-1 heuristics including
+  cached pattern-database support.
 
 ## Solver Modules
 

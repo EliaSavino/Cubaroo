@@ -135,13 +135,14 @@ class TransformerQNet(nn.Module):
         d_model: int = 128,
         nhead: int = 8,
         num_layers: int = 3,
-        dim_feedforward: int = 256,
-        dropout: float = 0.1,
+        dim_feedforward: int | None = None,
+        dropout: float = 0.05,
         n_actions: int = N_ACTIONS,
     ) -> None:
         super().__init__()
         T_in = 40  # input token length (IndexCubieEncoder)
         T_out = 20  # tokens after merging (8 corners + 12 edges)
+        ff_dim = dim_feedforward or (4 * d_model)
 
         # Embedding tables per feature stream
         self.emb_corner_perm = nn.Embedding(8, d_model)
@@ -155,15 +156,17 @@ class TransformerQNet(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            dim_feedforward=dim_feedforward,
+            dim_feedforward=ff_dim,
             dropout=dropout,
             batch_first=True,
             activation="gelu",
         )
         self.enc = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.input_dropout = nn.Dropout(dropout)
 
         # Simple head over pooled representation
         self.head = nn.Sequential(
+            nn.LayerNorm(d_model),
             nn.Linear(d_model, d_model),
             nn.GELU(),
             nn.Linear(d_model, n_actions),
@@ -215,6 +218,7 @@ class TransformerQNet(nn.Module):
 
         # Positional encoding + Transformer encoder
         x = self.pos(x)    # [B, 20, D]
+        x = self.input_dropout(x)
         x = self.enc(x)    # [B, 20, D]
 
         # Pool and predict Q-values

@@ -97,7 +97,7 @@ class CubeGymCubie:
     encoder: CubieEncoder
     alpha: float = 1.0
     max_steps: int = 100
-    scorer: Scorer = field(default_factory=lambda: Scorer(option=ScoringOption.LENGTH_AWARE))
+    scorer: Scorer = field(default_factory=lambda: Scorer(option=ScoringOption.CONSISTENT_PROGRESS))
     MCTS_planner = None
 
     def reset(self, scramble_len: int = 0, seed: int | None = None) -> np.ndarray:
@@ -171,6 +171,7 @@ class CubeGymCubie:
         info: Dict[str, Any] = {
             "move": move,
             "score": score,
+            "solved": solved,
             "history_len": len(history),
         }
         return obs, reward, done, info

@@ -136,6 +136,26 @@ class Cubie:
     FACELETS: ClassVar[Dict[str, List[Tuple[int, int, int]]]]
     Name: ClassVar[str] = "Cubie"
 
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the cubie configuration in isolation."""
+        if self.slot_name not in self.SLOT2FACES:
+            raise ValueError(f"Invalid slot {self.slot_name!r} for {self.Name}.")
+        if len(self.stickers) != len(self.SLOT2FACES[self.slot_name]):
+            raise ValueError(
+                f"{self.Name} sticker count {len(self.stickers)} does not match "
+                f"slot arity {len(self.SLOT2FACES[self.slot_name])}."
+            )
+        if len(set(self.stickers)) != len(self.stickers):
+            raise ValueError(f"{self.Name} stickers must be unique, got {self.stickers!r}.")
+        if self.ori < 0:
+            raise ValueError(f"{self.Name} orientation must be non-negative, got {self.ori}.")
+        self.ori %= self.ORI_MOD
+        if self.piece_idx is not None and self.piece_idx < 0:
+            raise ValueError(f"{self.Name} piece_idx must be non-negative, got {self.piece_idx}.")
+
     def move_to(self, dest_slot: str, delta_ori: int) -> None:
         """
         Re-seat this cubie into a new slot and update its orientation in place.
@@ -146,6 +166,7 @@ class Cubie:
         """
         self.slot_name = dest_slot
         self.ori = (self.ori + delta_ori) % self.ORI_MOD
+        self.validate()
 
     # --- rendering helpers ---
     def stickers_in_slot_order(self) -> Tuple[int, ...]:

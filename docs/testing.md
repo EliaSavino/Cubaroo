@@ -12,8 +12,9 @@ python -m unittest discover -s tests
 
 - deterministic cube scrambles with explicit seeds
 - inverse move correctness and solved-state invariants
+- cube structural consistency and facelet-count validity
 - history bookkeeping across scramble and solve phases
-- scorer dispatch and monotonic sanity checks
+- scorer dispatch, state-only consistency, and monotonic sanity checks
 - environment reset/step behavior
 - planner integration without mutating the live environment
 - top-level package exports through `src` and `src.index`

@@ -23,6 +23,7 @@ from src.solvers.replay import Replay
 from src.models.actor import build_actor
 from src.solvers.solver_utilities import polyak_update, linear_epsilon, to_device, infer_obs_dtype, _maybe_compile
 from src.solvers.tree_search_planner import MCTSPlanner
+from src.solvers.cube_gym import inverse_action_idx
 
 
 
@@ -74,13 +75,33 @@ class DQNConfig:
     eps_end: float = 0.05
     # Final epsilon after decay. Lower → more greedy late training.
 
+    eps_hold_steps: int = 5_000
+    # Keep epsilon at eps_start briefly before decaying.
+
     eps_decay_steps: int = 80000
     # Number of steps over which epsilon linearly decays from eps_start to eps_end.
     # For quicker consolidation on easy scrambles, try 80k–120k.
 
-    curriculum_success: float = 0.4
-    # When greedy solve-rate (SR) at current scramble_len ≥ this, bump difficulty.
-    # Consider 0.30 for early stages to move 4→6 sooner.
+    eps_schedule: str = "cosine"
+    # Epsilon annealing schedule: "linear" or "cosine".
+
+    curriculum_success: float = 0.55
+    # Final-stage solve-rate target used by the curriculum.
+
+    curriculum_easy_success: float = 0.95
+    # Early-stage solve-rate target for the easiest scrambles.
+
+    curriculum_eval_window: int = 3
+    # Number of consecutive evaluation windows that must clear the target before bumping.
+
+    curriculum_eps_boost: float = 0.20
+    # Temporary exploration boost applied after a curriculum bump.
+
+    curriculum_eps_boost_steps: int = 15_000
+    # Duration of the temporary post-bump exploration boost.
+
+    curriculum_schedule: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20)
+    # Gradual scramble schedule; training advances one stage at a time through this list.
 
     curriculum_max_scramble: int = 20
     # Upper bound for scramble length during curriculum progression.
@@ -93,17 +114,17 @@ class DQNConfig:
     # Root directory to save experiment runs/logs.
     action_space = 12  # fixed for Rubik's Cube
 
-    use_mcts: bool = True   # whether to use MCTS planning during training
+    use_mcts: bool = False   # whether to use MCTS planning during training
     mcts_every: int = 1    # run MCTS every N steps
     mcts_n_sim: int = 5   # how many carlos to monte
     mcts_max_depth: int = 5 # lookahead depth for MCTS
     mcts_cpuct: float = 1.5 # exploration constant for MCTS
     mcts_use_model: bool = False  # whether to use Q-network for leaf eval in MCTS
     mcts_use_priors: bool = False     # whether to use policy priors in MCTS
-    eval_use_mcts: bool = True  # whether to use MCTS during evaluation
-    lambda_mcts_value: float = 0.5  # weight for combining MCTS value with Q-value during eval
-    beta_mcts_policy: float = 1.0  # temperature for MCTS policy during eval
-    eps_mcts_gate: float = 1.0  # only use MCTS when epsilon <= this during training
+    eval_use_mcts: bool = False  # whether to use MCTS during evaluation
+    lambda_mcts_value: float = 0.0  # weight for combining MCTS value with Q-value during eval
+    beta_mcts_policy: float = 0.0  # temperature for MCTS policy during eval
+    eps_mcts_gate: float = 0.10  # only use MCTS when epsilon is already low during training
 
 class DQNTrainer:
     """
@@ -317,6 +338,36 @@ class DQNTrainer:
         torch.save(self.model.state_dict(), path)
         print(f"saved {tag} → {path}")
 
+    def _curriculum_schedule(self, start_scramble: int) -> list[int]:
+        """Return the gradual scramble schedule anchored at the requested start."""
+        schedule = sorted(
+            {
+                int(scramble)
+                for scramble in getattr(self.cfg, "curriculum_schedule", ())
+                if 1 <= int(scramble) <= int(self.cfg.curriculum_max_scramble)
+            }
+        )
+        if not schedule:
+            schedule = list(range(1, int(self.cfg.curriculum_max_scramble) + 1))
+        if start_scramble not in schedule:
+            schedule.append(int(start_scramble))
+            schedule.sort()
+        return schedule
+
+    def _curriculum_target(self, scramble_len: int, schedule: list[int]) -> float:
+        """Interpolate solve-rate targets from easy stages to harder ones."""
+        if not schedule:
+            return float(self.cfg.curriculum_success)
+        lo = float(self.cfg.curriculum_easy_success)
+        hi = float(self.cfg.curriculum_success)
+        if len(schedule) == 1:
+            return hi
+        start = schedule[0]
+        end = schedule[-1]
+        mix = 0.0 if end == start else (scramble_len - start) / float(end - start)
+        mix = float(np.clip(mix, 0.0, 1.0))
+        return lo + (hi - lo) * mix
+
     # simple one-episode eval (greedy)
     @torch.no_grad()
     def evaluate(self, episodes: int = 70, scramble_len: Optional[int] = None) -> Tuple[float, float]:
@@ -337,8 +388,8 @@ class DQNTrainer:
 
         Notes
         -----
-        - A run is counted as solved when the environment signals `done` and
-          `info.get("score", 0.0) > 1.0` (matching your environment’s convention).
+        - A run is counted as solved when the environment reports `info["solved"]`
+          or the cube is in the solved state at termination.
         - Each episode is capped at 200 steps.
         """
         solved = 0
@@ -370,14 +421,14 @@ class DQNTrainer:
                 obs, r, done, info = self.env.step(a)
                 last_action_idx = a
                 steps += 1
-                if done and info.get("score", 0.0) > 1.0:
+                if done and (bool(info.get("solved", False)) or self.env.cube.is_solved()):
                     solved += 1
                     break
             avg_len += steps
         return solved / episodes, (avg_len / episodes)
 
     # --- Training loop ---
-    def train(self, start_scramble: int = 4):
+    def train(self, start_scramble: int = 1):
         """
         Train the DQN agent with prioritized replay and Double-DQN targets.
 
@@ -393,14 +444,17 @@ class DQNTrainer:
 
         Parameters
         ----------
-        start_scramble : int, default=4
+        start_scramble : int, default=1
             Initial scramble length used for `env.reset`.
 
         Returns
         -------
         None
         """
-        obs = self.env.reset(scramble_len=start_scramble)
+        curriculum_schedule = self._curriculum_schedule(start_scramble)
+        stage_idx = curriculum_schedule.index(start_scramble)
+        current_scramble = curriculum_schedule[stage_idx]
+        obs = self.env.reset(scramble_len=current_scramble)
         self.obs_dtype = infer_obs_dtype(obs)
 
         step = 0
@@ -409,7 +463,6 @@ class DQNTrainer:
         t0 = time.time()
         last_eval_at = -self.cfg.eval_every
         last_log_at = 0
-        current_scramble = start_scramble
         beta0 = 0.4
         beta1 = 1.0
 
@@ -417,14 +470,24 @@ class DQNTrainer:
             t = min(1.0, step / self.cfg.total_steps)
             return beta0 + (beta1 - beta0) * t
 
-        lock_eval_windows = 5  # min evals between curriculum bumps
-        since_bump = 0
+        stage_clear_streak = 0
+        last_bump_step: Optional[int] = None
 
         print(f"Starting training on device={self.device} | steps={self.cfg.total_steps:,} | scramble={current_scramble}")
         print("-" * 90)
         last_action_idx: Optional[int] = None
         while step < self.cfg.total_steps:
-            eps = linear_epsilon(step, self.cfg)
+            base_eps = linear_epsilon(step, self.cfg)
+            eps = base_eps
+            if (
+                last_bump_step is not None
+                and getattr(self.cfg, "curriculum_eps_boost_steps", 0) > 0
+            ):
+                elapsed = step - last_bump_step
+                if elapsed < self.cfg.curriculum_eps_boost_steps:
+                    mix = 1.0 - (elapsed / float(self.cfg.curriculum_eps_boost_steps))
+                    stage_eps = min(1.0, self.cfg.eps_end + self.cfg.curriculum_eps_boost * mix)
+                    eps = max(eps, stage_eps)
             x = to_device(obs[None, ...], self.device, self.obs_dtype)
             # Build mask that forbids the inverse of the last real action
             action_mask = None
@@ -567,9 +630,10 @@ class DQNTrainer:
                 sr, avg_len = self.evaluate(scramble_len=current_scramble)
                 avg_ret = np.mean(ep_returns[-100:]) if ep_returns else 0.0
                 dt = (time.time() - t0) / 60
+                target_sr = self._curriculum_target(current_scramble, curriculum_schedule)
                 print("=" * 90)
                 print(f"[{step:>8}] SCR={current_scramble:2d} | eps={eps:5.3f} | "
-                      f"SR={sr * 100:5.1f}% | avg_len={avg_len:5.1f} | "
+                      f"SR={sr * 100:5.1f}% | target={target_sr * 100:5.1f}% | avg_len={avg_len:5.1f} | "
                       f"avg_return={avg_ret:7.3f} | "
                       f"loss={self.last_loss:8.5f} | t={dt:5.1f} min")
                 print("=" * 90)
@@ -585,12 +649,24 @@ class DQNTrainer:
                     self._best_sr = sr
                     self._save_ckpt("best")
 
-                # curriculum with lock
-                since_bump += 1
-                if sr >= self.cfg.curriculum_success and current_scramble < self.cfg.curriculum_max_scramble and since_bump >= lock_eval_windows:
-                    current_scramble += 2
-                    since_bump = 0
-                    print(f"  ↪ Curriculum bump: scramble → {current_scramble}")
+                if sr >= target_sr:
+                    stage_clear_streak += 1
+                else:
+                    stage_clear_streak = 0
+
+                if (
+                    stage_clear_streak >= self.cfg.curriculum_eval_window
+                    and stage_idx < len(curriculum_schedule) - 1
+                ):
+                    stage_idx += 1
+                    current_scramble = curriculum_schedule[stage_idx]
+                    stage_clear_streak = 0
+                    last_bump_step = step
+                    next_target = self._curriculum_target(current_scramble, curriculum_schedule)
+                    print(
+                        f"  ↪ Curriculum bump: scramble → {current_scramble} "
+                        f"(target SR {next_target:.2f})"
+                    )
 
         # --- save model at the end ---
         os.makedirs(self.exp_dir, exist_ok=True)
@@ -605,11 +681,16 @@ if __name__ == "__main__":
     from src.models.mlpq_net import MLPQNet
 
     # One-hot + MLP
-    env = CubeGymCubie(encoder=CubieEncoder(), alpha=1.0, max_steps=50, scorer=Scorer(ScoringOption.WEIGHTED_SLOT_AND_ORI))
+    env = CubeGymCubie(
+        encoder=CubieEncoder(),
+        alpha=1.0,
+        max_steps=50,
+        scorer=Scorer(ScoringOption.LOOKAHEAD_PROGRESS),
+    )
     model = MLPQNet(in_dim=256, hidden=512)          # baseline
     cfg = DQNConfig(total_steps=1000_000, save_path="models/cube_mlp_actor.pt",
                     experiment_name="cube_dqn_mlp_testing", output_dir="runs")
-    DQNTrainer(env, model, cfg).train(start_scramble=4)
+    DQNTrainer(env, model, cfg).train(start_scramble=1)
 
     # # Index + Transformer
     # env = CubeGymCubie(encoder=IndexCubieEncoder(), alpha=1.0, max_steps=200)

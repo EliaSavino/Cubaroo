@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 # project imports
+from src.scorer import Scorer, ScoringOption
 from src.solvers.manager import DQNTrainer, DQNConfig
 from src.solvers.cube_gym import CubeGymCubie
 from src.solvers.encoders import IndexCubieEncoder  # <-- token/index encoder
@@ -33,8 +34,8 @@ def set_seed(seed: int):
 def main():
     p = argparse.ArgumentParser("Train GNN DQN on Cube (token/index encoder)")
     # training loop / env
-    p.add_argument("--steps", type=int, default=5_000_000)
-    p.add_argument("--scramble", type=int, default=4)
+    p.add_argument("--steps", type=int, default=3_000_000)
+    p.add_argument("--scramble", type=int, default=1)
     p.add_argument("--alpha", type=float, default=1.0, help="reward scale for Δprogress")
     p.add_argument("--max-steps", type=int, default=200, dest="max_steps")
 
@@ -48,12 +49,17 @@ def main():
     # epsilon-greedy
     p.add_argument("--eps-start", type=float, default=1.0)
     p.add_argument("--eps-end", type=float, default=0.05)
-    p.add_argument("--eps-decay-steps", type=int, default=200_000)
+    p.add_argument("--eps-hold-steps", type=int, default=5_000)
+    p.add_argument("--eps-decay-steps", type=int, default=250_000)
 
     # eval + curriculum
     p.add_argument("--eval-every", type=int, default=10_000)
-    p.add_argument("--curriculum-success", type=float, default=0.30)
+    p.add_argument("--curriculum-success", type=float, default=0.55)
+    p.add_argument("--curriculum-easy-success", type=float, default=0.95)
+    p.add_argument("--curriculum-window", type=int, default=3)
     p.add_argument("--curriculum-max", type=int, default=20)
+    p.add_argument("--scorer", choices=["consistent", "lookahead"], default="lookahead")
+    p.add_argument("--use-mcts", action="store_true")
 
     # model hyperparams
     p.add_argument("--d-model", type=int, default=128)
@@ -68,6 +74,11 @@ def main():
 
     set_seed(args.seed)
     os.makedirs(args.models_dir, exist_ok=True)
+    scorer_option = (
+        ScoringOption.LOOKAHEAD_PROGRESS
+        if args.scorer == "lookahead"
+        else ScoringOption.CONSISTENT_PROGRESS
+    )
 
     # --- Env + Model ----------------------------------------------------------
     # Index/token encoder expected to produce integer tokens per cubie/node.
@@ -75,6 +86,7 @@ def main():
         encoder=IndexCubieEncoder(),  # <- emits token indices for CubieTokenEmbedding
         alpha=args.alpha,
         max_steps=args.max_steps,
+        scorer=Scorer(option=scorer_option),
     )
 
     model = CubeGNNQNet(
@@ -95,9 +107,15 @@ def main():
         eval_every=args.eval_every,
         eps_start=args.eps_start,
         eps_end=args.eps_end,
+        eps_hold_steps=args.eps_hold_steps,
         eps_decay_steps=args.eps_decay_steps,
+        eps_schedule="cosine",
         curriculum_success=args.curriculum_success,
+        curriculum_easy_success=args.curriculum_easy_success,
+        curriculum_eval_window=args.curriculum_window,
         curriculum_max_scramble=args.curriculum_max,
+        use_mcts=args.use_mcts,
+        eval_use_mcts=args.use_mcts,
         save_path=os.path.join(args.models_dir, "cube_gnn.pt"),
         output_dir=args.outdir,
         experiment_name=args.exp,
